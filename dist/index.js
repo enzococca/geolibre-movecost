@@ -2428,6 +2428,11 @@ mcx_log <- function(...) {
 
 mcx_stop <- function(...) stop(paste0(...), call. = FALSE)
 
+# jsonlite's auto_unbox turns a one-element vector into a bare value, so a run
+# that logged exactly one line would send \`log\` as a string and the panel's
+# \`log.join()\` would fail. I() marks it as an array whatever its length.
+mcx_log_out <- function() I(as.character(mcx_env$log))
+
 # --- environment -------------------------------------------------------------
 
 mcx_version <- function() {
@@ -2463,6 +2468,17 @@ mcx_require <- function() {
     mcx_stop(
       "This plugin needs movecost 3.0.0 or later; the installed version is ",
       as.character(version), '. Update it with: install.packages("movecost")'
+    )
+  }
+  # packageVersion() reads the DESCRIPTION on disk, but the namespace loaded in
+  # a long-running R service is whatever was there when it started. Upgrading
+  # movecost under a running service therefore looks fine here and then fails
+  # deep inside an analysis, which is worth naming.
+  if (!exists("mc_surface", envir = asNamespace("movecost"), inherits = FALSE)) {
+    mcx_stop(
+      "movecost ", as.character(version), " is installed, but the version loaded in ",
+      "this R session has no mc_surface(): it was started before the upgrade. ",
+      "Restart the R service."
     )
   }
   invisible(TRUE)
@@ -3015,11 +3031,11 @@ mcx_fetch_dem <- function(request_path, response_path = NULL) {
         bounds = list(west = e84$xmin, south = e84$ymin, east = e84$xmax, north = e84$ymax),
         extentProjected = list(xmin = e$xmin, ymin = e$ymin, xmax = e$xmax, ymax = e$ymax),
         elapsedSeconds = as.numeric(difftime(Sys.time(), started, units = "secs")),
-        log = mcx_env$log
+        log = mcx_log_out()
       )
     },
     error = function(e) {
-      list(ok = FALSE, error = conditionMessage(e), log = mcx_env$log)
+      list(ok = FALSE, error = conditionMessage(e), log = mcx_log_out())
     }
   )
 
@@ -3155,10 +3171,10 @@ mcx_grid_to_dtm <- function(request_path, response_path = NULL) {
         bounds = list(west = terra::xmin(e84), south = terra::ymin(e84),
                       east = terra::xmax(e84), north = terra::ymax(e84)),
         elapsedSeconds = as.numeric(difftime(Sys.time(), started, units = "secs")),
-        log = mcx_env$log
+        log = mcx_log_out()
       )
     },
-    error = function(e) list(ok = FALSE, error = mcx_memory_hint(conditionMessage(e)), log = mcx_env$log)
+    error = function(e) list(ok = FALSE, error = mcx_memory_hint(conditionMessage(e)), log = mcx_log_out())
   )
   invisible(gc(full = TRUE))
 
@@ -3209,10 +3225,10 @@ mcx_preview_dtm <- function(request_path, response_path = NULL) {
           max = if (length(finite)) max(finite) else NA_real_
         ),
         raster = payload,
-        log = mcx_env$log
+        log = mcx_log_out()
       )
     },
-    error = function(e) list(ok = FALSE, error = conditionMessage(e), log = mcx_env$log)
+    error = function(e) list(ok = FALSE, error = conditionMessage(e), log = mcx_log_out())
   )
 
   jsonlite::write_json(out, response_path, auto_unbox = TRUE, null = "null",
@@ -3338,7 +3354,7 @@ mcx_run <- function(request_path, response_path = NULL) {
         crs = as.character(sf::st_crs(target_crs)$input),
         elapsedSeconds = as.numeric(difftime(Sys.time(), started, units = "secs")),
         versions = mcx_version(),
-        log = mcx_env$log,
+        log = mcx_log_out(),
         result = result
       )
     },
@@ -3346,7 +3362,7 @@ mcx_run <- function(request_path, response_path = NULL) {
       list(
         ok = FALSE,
         error = mcx_memory_hint(conditionMessage(e)),
-        log = mcx_env$log,
+        log = mcx_log_out(),
         elapsedSeconds = as.numeric(difftime(Sys.time(), started, units = "secs"))
       )
     }
@@ -5993,13 +6009,14 @@ class MovecostPanel {
         );
       }
     }
-    if (response.log?.length) {
+    const logLines = Array.isArray(response.log) ? response.log : response.log ? [String(response.log)] : [];
+    if (logLines.length) {
       children.push(
         el(
           "details",
           { class: "mcx-table" },
           el("summary", { text: "Engine log" }),
-          el("pre", { class: "mcx-pre", text: response.log.join("\n") })
+          el("pre", { class: "mcx-pre", text: logLines.join("\n") })
         )
       );
     }
