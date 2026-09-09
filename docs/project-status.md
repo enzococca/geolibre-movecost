@@ -2,11 +2,12 @@
 
 Project lives at `~/geolibre-movecost` on the Mac (mac-home) and on GitHub at
 **https://github.com/enzococca/geolibre-movecost** (main + orphan `gh-pages`).
-Version 0.1.5. GeoLibre is 2.9.0 on both the Mac and the iPad.
+Version 0.2.0. GeoLibre is 2.9.0 on both the Mac and the iPad.
 
 **Published manifest (permanent):**
 `https://enzococca.github.io/geolibre-movecost/plugin.json`
-— serves plugin.json, dist/, and `wasm-repo/` (the rebuilt terra) with CORS.
+— serves plugin.json, dist/, and `wasm-repo/` (the rebuilt terra and
+movecost 3.0.0 for WebAssembly) with CORS.
 Republish with `bash scripts/publish-pages.sh && git push origin gh-pages`;
 if the Pages build does not pick it up, `gh api -X POST repos/enzococca/geolibre-movecost/pages/builds`.
 
@@ -29,29 +30,56 @@ Registry updates later = bump version in plugin.json + registry entry,
 installs block on GeoLibre's trust hash after every republish and the iPad
 build showed no reload control to re-accept.
 
-## movecost 2.2 vs CRAN 3.0.0 (checked 2026-09-09)
+## movecost 3.0.0 port — DONE (2026-09-09, `7374f0f`, version 0.2.0)
 
-CRAN carries **3.0.0** (published 2026-06-15); the plugin runs **2.2** on both
-paths — `repo.r-wasm.org` (R 4.6) still builds 2.2, and the Mac's local R has
-2.2 (built 2026-04-29, i.e. before 3.0.0 existed). 3.0.0 is a redesign:
-`mc_surface()` once, then `mc_accum`/`mc_paths`/`mc_corridor`/`mc_boundary`/
-`mc_alloc`/`mc_network`/`mc_rank`; stack becomes terra+sf+igraph (raster, sp,
-gdistance, chron, hard elevatr all dropped); plotting decoupled into ggplot2
-methods; the same 26 cost functions. The 2.x entry points are **defunct stubs
-that raise an error**.
+CRAN went to **3.0.0** on 2026-06-15 while the plugin ran 2.2; the audit that
+found it also found that every install instruction said
+`install.packages("movecost")`, which would have installed 3.0.0 and broken the
+local R service (fixed first by pinning 2.2 in `aa6fdfe`, then superseded by
+the port).
 
-Live defect found and fixed the same day (`aa6fdfe`): every install instruction
-said `install.packages("movecost")`, which today fetches 3.0.0 and breaks the
-local R service. README, r-backend/README and the published guide now pin
-`remotes::install_version("movecost", "2.2")`, and `mcx_require()` refuses 3.x
-with a message naming the fix. Native suite still 11/11.
+**The engine now speaks the 3.0 API.** `mcx_build_surface()` calls
+`mc_surface()` once and caches the graph in `mcx_env$surface` under a signature
+of DTM + barrier + every cost parameter; the analyses (`mc_paths`+`mc_accum`,
+`mc_corridor`, `mc_network`, `mc_alloc`, `mc_boundary`, `mc_rank`) read it. One
+surface at a time — the old one is dropped and collected before a new one is
+built, and a new DTM download calls `mcx_forget_surface()`. Native suite:
+13/13, and the whole synthetic run takes 0.2–0.8 s per analysis where 2.x took
+tens of seconds.
 
-Porting to 3.0.0 is feasible and worthwhile when there is time: all its
-dependencies already have wasm builds upstream (igraph 2.3.1, ggplot2 4.0.3,
-terra 1.9-27, sf 1.1-1) and movecost is pure R, so it can go into
-`build/wasm-repo` through the same rwasm pipeline as terra. The work is
-confined to the `mcx_analysis_*()` functions; the JSON contract and the whole
-TypeScript side are untouched.
+Behaviour that changed, and is reflected in the UI and the guide:
+
+* barriers moved onto the surface, so **allocation and ranking honour them**
+  now (`supportsBarrier: true` everywhere);
+* `mc_boundary()` takes **one limit per call** — the panel still offers a list
+  and the engine loops, each extra limit being one pass over the cached graph —
+  and returns **polygons** with `area`/`perimeter` instead of lines (result key
+  `isolines`/`origins` → `boundaries` + `accumulated`);
+* corridors gained the **"through"** formulation (`corridorMethod`), ranked
+  paths a **detour penalty**, networks a numbered `nodes` layer;
+* `breaks` became an **interval**, not a list of values;
+* `irregular.dtm` and `use.corr` are gone;
+* units: `mc_*` returns `units` columns that `jsonlite` cannot serialise —
+  `mcx_plain_table()` strips the class (this was the only real surprise in the
+  port);
+* packages: raster, sp, gdistance, chron **out**; igraph and ggplot2 **in**
+  (ggplot2 only because movecost imports it for plot methods the engine never
+  calls). `r-backend/start.R` refuses < 3.0.0.
+
+**WebAssembly.** `repo.r-wasm.org` still builds 2.2, so
+`scripts/build-movecost-wasm.R` packages 3.0.0 for webR *without the rwasm
+container*: movecost is `NeedsCompilation: no`, so a normal R 4.6 install is
+byte-for-byte usable once the `Built:` metadata in DESCRIPTION and
+`Meta/package.rds` is restamped `wasm32-unknown-emscripten`. The `.tgz` (2.8 MB)
+sits in `build/wasm-repo` next to the rebuilt terra and is served from Pages;
+the script aborts if a future movecost ever ships compiled code.
+`scripts/test-wasm-install.mjs` serves that repo over HTTP, installs the stack
+into webR under Node and runs `mcx_run()` itself — verified with movecost 3.0.0,
+terra 1.9.46, sf 1.1.1, igraph 2.3.1, ggplot2 4.0.3.
+
+**Gotcha for future sessions:** R on the Mac only works under
+`do shell script` with `PROJ_LIB=/opt/homebrew/share/proj` (and `GDAL_DATA`)
+exported, otherwise terra dies with "Cannot find proj.db".
 
 ## Demo video for social media (2026-09-09)
 

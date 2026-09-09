@@ -4,5 +4,7 @@
   "version": "0.2.0",
   "entry": "dist/index.js",
   "style": "dist/style.css",
-  "description": "Slope-dependent accumulated cost surfaces, least-cost paths, corridors, networks, cost allocation and isochrones, using the movecost R package."
+  "description": "Slope-dependent accumulated cost surfaces, least-cost paths, corridors, networks, cost allocation and isochrones, using the movecost R package.",
+  "author": "Enzo Cocca",
+  "homepage": "https://github.com/enzococca/geolibre-movecost"
 }

@@ -51,20 +51,53 @@ const versions = await webR.evalRString(`
 `);
 log("installed:", versions);
 
+// The engine itself, on the code path the plugin uses in the browser: the
+// request and its layers are written into webR's filesystem and mcx_run()
+// answers with the JSON the TypeScript side parses.
+const engine = await readFile(new URL("../src/engine/movecost-engine.R", import.meta.url), "utf8");
+await webR.FS.mkdir("/movecost");
+await webR.FS.writeFile("/movecost/engine.R", new TextEncoder().encode(engine));
+
 const check = await webR.evalRString(`
-  suppressPackageStartupMessages(library(movecost))
+  source("/movecost/engine.R")
   n <- 40
   r <- terra::rast(nrows = n, ncols = n, xmin = 4e5, xmax = 4e5 + n * 50,
                    ymin = 45e5, ymax = 45e5 + n * 50, crs = "EPSG:32633")
   xy <- terra::xyFromCell(r, seq_len(terra::ncell(r)))
-  terra::values(r) <- 300 + 0.05 * (xy[, 1] - 4e5) + 0.03 * (xy[, 2] - 45e5)
-  pt <- function(x, y) sf::st_sf(id = 1, geometry = sf::st_sfc(sf::st_point(c(x, y)), crs = 32633))
-  s <- mc_surface(r, funct = "t", move = 8)
-  p <- mc_paths(s, origin = pt(400200, 4500200), destin = pt(401800, 4501800))
-  sprintf("surface %s, path cost %.3f h over %.0f m",
-          class(s)[1], as.numeric(p$paths$cost[1]), as.numeric(p$paths$length[1]))
+  terra::values(r) <- 300 + 400 * exp(-(((xy[, 1] - 4e5) / 2000 - 0.5)^2 +
+                                        ((xy[, 2] - 45e5) / 2000 - 0.5)^2) / 0.05)
+  terra::writeRaster(r, "/movecost/dtm.tif", overwrite = TRUE)
+  pt <- function(x, y, id) sf::st_sf(mcx_id = id,
+        geometry = sf::st_sfc(sf::st_point(c(x, y)), crs = 32633))
+  sf::st_write(pt(400200, 4500200, "O1"), "/movecost/origin.geojson",
+               quiet = TRUE, delete_dsn = TRUE)
+  sf::st_write(pt(401800, 4501800, "D1"), "/movecost/destin.geojson",
+               quiet = TRUE, delete_dsn = TRUE)
+
+  run <- function(label, req) {
+    jsonlite::write_json(req, "/movecost/req.json", auto_unbox = TRUE)
+    resp <- jsonlite::fromJSON(mcx_run("/movecost/req.json"), simplifyVector = FALSE)
+    if (!isTRUE(resp$ok)) stop(label, ": ", resp$error)
+    sprintf("%s ok in %.1fs [%s]", label, resp$elapsedSeconds,
+            paste(names(resp$result$vectors), collapse = ","))
+  }
+
+  paste(
+    run("paths", list(analysis = "paths", dtmPath = "/movecost/dtm.tif",
+                      originPath = "/movecost/origin.geojson",
+                      destinPath = "/movecost/destin.geojson",
+                      params = list(funct = "t", move = 8, time = "h"))),
+    run("boundary", list(analysis = "boundary", dtmPath = "/movecost/dtm.tif",
+                         originPath = "/movecost/origin.geojson",
+                         params = list(funct = "t", move = 8, time = "h",
+                                       contValue = 0.5))),
+    sep = " | ")
 `);
 log("engine check:", check);
+const reused = await webR.evalRString(
+  'if (any(grepl("Reusing", mcx_env$log))) "graph reused on the second run" else "graph rebuilt"',
+);
+log("surface cache:", reused);
 
 await webR.close();
 server.close();
