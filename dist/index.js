@@ -2417,6 +2417,11 @@ const engineSource = `# ========================================================
 mcx_env <- new.env(parent = emptyenv())
 mcx_env$log <- character(0)
 mcx_env$target_crs <- NULL
+# DTMs kept in this R session rather than on disk, by handle. Needed under webR,
+# where terra::writeRaster() never returns for rasters above a couple of
+# thousand cells; the analyses and the preview accept a handle in place of a
+# path, so a downloaded DTM never has to become a file there.
+mcx_env$dtms <- list()
 
 mcx_log <- function(...) {
   msg <- paste0(...)
@@ -2497,6 +2502,22 @@ mcx_prepare_dtm <- function(path, reproject = TRUE) {
   }
   names(r) <- "dtm"
   r
+}
+
+#' The DTM a request refers to: a kept in-memory raster by handle, or a file.
+mcx_resolve_dtm <- function(req, reproject = TRUE) {
+  handle <- req$dtmHandle
+  if (!is.null(handle) && nzchar(handle)) {
+    r <- mcx_env$dtms[[handle]]
+    if (is.null(r)) {
+      mcx_stop("The DTM '", handle, "' is no longer in this R session. Download it again.")
+    }
+    return(r)
+  }
+  if (is.null(req$dtmPath) || !nzchar(req$dtmPath) || !file.exists(req$dtmPath)) {
+    return(NULL)
+  }
+  mcx_prepare_dtm(req$dtmPath, reproject = reproject)
 }
 
 # --- vector helpers ----------------------------------------------------------
@@ -3003,18 +3024,27 @@ mcx_grid_to_dtm <- function(request_path, response_path = NULL) {
       }
       names(r) <- "dtm"
 
+      keep_as <- mcx_pick(req, "keepAs", NULL)
       out_path <- mcx_pick(req, "outPath", NULL)
-      if (is.null(out_path)) out_path <- file.path(dirname(request_path), "dem.tif")
-      terra::writeRaster(r, out_path, overwrite = TRUE, gdal = c("COMPRESS=DEFLATE"))
+      if (!is.null(keep_as) && nzchar(keep_as)) {
+        mcx_env$dtms[[keep_as]] <- r
+        out_bytes <- 0
+        out_path <- NULL
+      } else {
+        if (is.null(out_path)) out_path <- file.path(dirname(request_path), "dem.tif")
+        terra::writeRaster(r, out_path, overwrite = TRUE, gdal = c("COMPRESS=DEFLATE"))
+        out_bytes <- file.info(out_path)$size
+      }
 
-      e84 <- terra::ext(terra::project(r, "EPSG:4326"))
+      e84 <- terra::project(terra::ext(r), from = terra::crs(r), to = "EPSG:4326")
       finite <- terra::values(r, mat = FALSE)
       finite <- finite[!is.na(finite)]
 
       list(
         ok = TRUE,
         path = out_path,
-        bytes = file.info(out_path)$size,
+        handle = keep_as,
+        bytes = out_bytes,
         crs = paste0("EPSG:", epsg),
         zoom = mcx_pick(req, "zoom", NA_integer_),
         width = terra::ncol(r),
@@ -3024,7 +3054,8 @@ mcx_grid_to_dtm <- function(request_path, response_path = NULL) {
           min = if (length(finite)) min(finite) else NA_real_,
           max = if (length(finite)) max(finite) else NA_real_
         ),
-        bounds = list(west = e84$xmin, south = e84$ymin, east = e84$xmax, north = e84$ymax),
+        bounds = list(west = terra::xmin(e84), south = terra::ymin(e84),
+                      east = terra::xmax(e84), north = terra::ymax(e84)),
         elapsedSeconds = as.numeric(difftime(Sys.time(), started, units = "secs")),
         log = mcx_env$log
       )
@@ -3055,7 +3086,8 @@ mcx_preview_dtm <- function(request_path, response_path = NULL) {
     {
       mcx_require()
       req <- jsonlite::fromJSON(request_path, simplifyVector = TRUE)
-      r <- mcx_prepare_dtm(req$dtmPath, reproject = TRUE)
+      r <- mcx_resolve_dtm(req, reproject = TRUE)
+      if (is.null(r)) mcx_stop("No DTM to preview.")
       mcx_env$target_crs <- sf::st_crs(terra::crs(r))
 
       values <- terra::values(r, mat = FALSE)
@@ -3117,13 +3149,13 @@ mcx_run <- function(request_path, response_path = NULL) {
       # area that movecost itself resolves into elevation through elevatr. The
       # second is movecost's own documented path (\`studyplot\` + \`z\`), so it is
       # passed straight through rather than reimplemented here.
-      has_dtm <- !is.null(req$dtmPath) && nzchar(req$dtmPath) && file.exists(req$dtmPath)
+      dtm_rast <- mcx_resolve_dtm(
+        req,
+        reproject = !identical(mcx_pick(params, "autoReproject", TRUE), FALSE)
+      )
+      has_dtm <- !is.null(dtm_rast)
 
       if (has_dtm) {
-        dtm_rast <- mcx_prepare_dtm(
-          req$dtmPath,
-          reproject = !identical(mcx_pick(params, "autoReproject", TRUE), FALSE)
-        )
         target_crs <- sf::st_crs(terra::crs(dtm_rast))
         mcx_env$target_crs <- target_crs
         # movecost 2.x is built on raster/sp, so hand it a RasterLayer.
@@ -3428,7 +3460,8 @@ class HttpBackend {
     this.emit("done", `Built a ${summary.width} x ${summary.height} DTM.`, 1);
     return { bytes: tif, summary };
   }
-  async previewDtm(dtm) {
+  async previewDtm(dtm, handle) {
+    if (handle) throw new Error("The local R service holds no DTM handles; send the GeoTIFF instead.");
     const form = new FormData();
     form.append("dtm", new Blob([dtm], { type: "image/tiff" }), "dtm.tif");
     const response = await fetch(`${this.url}/preview`, { method: "POST", body: form });
@@ -3549,7 +3582,7 @@ class MovecostEngine {
     const dir = `${WORK_DIR}/run-${id}`;
     await ensureDir(webR, dir);
     const encoder = new TextEncoder();
-    const dtmPath = inputs.dtm ? `${dir}/dtm.tif` : null;
+    const dtmPath = inputs.dtm && !inputs.dtmHandle ? `${dir}/dtm.tif` : null;
     const studyplotPath = inputs.studyplot ? `${dir}/studyplot.geojson` : null;
     const originPath = `${dir}/origin.geojson`;
     const destinPath = inputs.destin ? `${dir}/destin.geojson` : null;
@@ -3567,6 +3600,7 @@ class MovecostEngine {
     const fullRequest = {
       ...request,
       dtmPath,
+      dtmHandle: inputs.dtmHandle ?? null,
       studyplotPath,
       originPath,
       destinPath,
@@ -3606,7 +3640,7 @@ class MovecostEngine {
     const encoder = new TextEncoder();
     const gridPath = `${dir}/grid.bin`;
     const areaPath = areaGeoJson ? `${dir}/area.geojson` : null;
-    const outPath = `${dir}/dem.tif`;
+    const handle = `dem-${this.requestCounter}`;
     const requestPath = `${dir}/grid.json`;
     const responsePath = `${dir}/grid.response.json`;
     this.emit("running", "Projecting the elevation grid…", null);
@@ -3620,7 +3654,7 @@ class MovecostEngine {
       encoder.encode(JSON.stringify({
         gridPath,
         areaPath,
-        outPath,
+        keepAs: handle,
         width: grid.width,
         height: grid.height,
         crs: grid.crs,
@@ -3640,24 +3674,23 @@ class MovecostEngine {
       this.emit("error", raw.error ?? "The grid could not be projected.", 1);
       throw new Error(raw.error ?? "The grid could not be projected.");
     }
-    const bytes = await webR.FS.readFile(outPath);
     await cleanupDir(webR, dir);
     const summary = parseDemSummary(raw);
     this.emit("done", `Built a ${summary.width} x ${summary.height} DTM.`, 1);
-    return { bytes: new Uint8Array(bytes), summary };
+    return { bytes: new Uint8Array(0), handle, summary };
   }
   /** Same preview the HTTP backend serves, computed in the page instead. */
-  async previewDtm(dtm) {
+  async previewDtm(dtm, handle) {
     const webR = await this.boot();
     const dir = `${WORK_DIR}/preview-${++this.requestCounter}`;
     await ensureDir(webR, dir);
-    const dtmPath = `${dir}/dtm.tif`;
+    const dtmPath = handle ? null : `${dir}/dtm.tif`;
     const requestPath = `${dir}/preview.json`;
     const responsePath = `${dir}/preview.response.json`;
-    await webR.FS.writeFile(dtmPath, dtm);
+    if (dtmPath) await webR.FS.writeFile(dtmPath, dtm);
     await webR.FS.writeFile(
       requestPath,
-      new TextEncoder().encode(JSON.stringify({ dtmPath }))
+      new TextEncoder().encode(JSON.stringify({ dtmPath, dtmHandle: handle ?? null }))
     );
     await webR.evalRVoid(`mcx_preview_dtm(${rString(requestPath)})`);
     const raw = await webR.FS.readFile(responsePath);
@@ -4533,6 +4566,10 @@ class MovecostPanel {
       void this.backend?.close();
       this.backend = null;
       this.backendProbe = null;
+      if (this.dtm?.handle) {
+        this.dtm = null;
+        this.clearTerrainOverlay();
+      }
     }
     if (this.backend) return Promise.resolve(this.backend);
     if (this.backendProbe) return this.backendProbe;
@@ -4658,7 +4695,7 @@ class MovecostPanel {
       children.push(
         el("p", {
           class: "mcx-file-summary",
-          text: s ? `${this.dtm.name} — ${s.width} × ${s.height} cells at ${s.resolution.toFixed(1)} m, ${Math.round(s.elevation.min ?? 0)}–${Math.round(s.elevation.max ?? 0)} m, ${s.crs}` : `${this.dtm.name} — ${formatBytes(this.dtm.bytes.byteLength)}`
+          text: s ? `${this.dtm.name} — ${s.width} × ${s.height} cells at ${s.resolution.toFixed(1)} m, ${Math.round(s.elevation.min ?? 0)}–${Math.round(s.elevation.max ?? 0)} m, ${s.crs}` : this.dtm.handle ? `${this.dtm.name} — held in the R session` : `${this.dtm.name} — ${formatBytes(this.dtm.bytes.byteLength)}`
         })
       );
     }
@@ -4860,8 +4897,8 @@ class MovecostPanel {
         result = await backend.dtmFromGrid(grid, areaGeoJson);
         result.summary.zoom = this.demZoom;
       }
-      const { bytes, summary } = result;
-      this.dtm = { name: `DEM (zoom ${summary.zoom})`, bytes, summary };
+      const { bytes, summary, handle } = result;
+      this.dtm = { name: `DEM (zoom ${summary.zoom})`, bytes, handle, summary };
       this.useArea = false;
       const cells = summary.width * summary.height;
       this.message = cells > 4e5 ? {
@@ -5348,7 +5385,7 @@ class MovecostPanel {
     const backend = await this.resolveBackend();
     if (typeof backend.previewDtm !== "function") return;
     try {
-      const preview = await backend.previewDtm(this.dtm.bytes);
+      const preview = await backend.previewDtm(this.dtm.bytes, this.dtm.handle ?? null);
       this.terrainPreview = preview;
       this.terrainOverlay = addRasterOverlay(this.app, decodeRaster(preview.raster), {
         name: "movecost — terrain",
@@ -5468,7 +5505,8 @@ class MovecostPanel {
       const response = await backend.run(
         { analysis: this.analysis, params },
         {
-          dtm: this.dtm?.bytes ?? null,
+          dtm: this.dtm && !this.dtm.handle ? this.dtm.bytes : null,
+          dtmHandle: this.dtm?.handle ?? null,
           studyplot: !this.dtm && this.area ? JSON.stringify(toFeatureCollection(this.area.features)) : null,
           origin: pointsToGeoJson(this.origin.features, "O"),
           destin: spec.destination ? pointsToGeoJson(this.destination.features, "D") : null,
