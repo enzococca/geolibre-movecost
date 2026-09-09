@@ -108,6 +108,16 @@ export interface BackendHealth {
 }
 
 /**
+ * True on iPad, iPhone and Android, where no local R service can exist. Modern
+ * iPadOS reports itself as a Mac, hence the touch-point check.
+ */
+export function isMobileDevice(): boolean {
+  const ua = navigator.userAgent;
+  if (/Android|iPhone|iPad/i.test(ua)) return true;
+  return /Mac/.test(ua) && navigator.maxTouchPoints > 1;
+}
+
+/**
  * Probes the local R service.
  *
  * Deliberately short-timeout and failure-tolerant: on a machine without the
@@ -118,6 +128,9 @@ export async function probeBackend(
   url: string = DEFAULT_BACKEND_URL,
   timeoutMs = 1500,
 ): Promise<BackendHealth | null> {
+  // Skipped rather than attempted on mobile: the refusal is instant, but the
+  // host logs it as a red network error in its diagnostics panel.
+  if (isMobileDevice()) return null;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
