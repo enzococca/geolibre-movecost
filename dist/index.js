@@ -3889,7 +3889,18 @@ function viewportPolygon(app) {
   } catch {
     bounds = null;
   }
-  if (!bounds) return null;
+  if (!bounds) {
+    try {
+      const raw = app.getMap?.()?.getBounds?.();
+      const arr = raw?.toArray?.();
+      if (arr && arr.length === 2) {
+        bounds = [arr[0][0], arr[0][1], arr[1][0], arr[1][1]];
+      }
+    } catch {
+      bounds = null;
+    }
+  }
+  if (!bounds || !bounds.every((v2) => Number.isFinite(v2))) return null;
   const [west, south, east, north] = bounds;
   return {
     bounds,
@@ -4534,6 +4545,7 @@ const KIND_STYLES = {
 function resultStyle(key, kind) {
   return RESULT_STYLES[key] ?? KIND_STYLES[kind] ?? {};
 }
+const PLUGIN_VERSION = "0.1.5";
 const ANALYSES = [
   {
     id: "paths",
@@ -5051,7 +5063,7 @@ class MovecostPanel {
       { class: "mcx-section mcx-section--intro" },
       el("p", {
         class: "mcx-intro",
-        text: "Slope-dependent cost analysis with the movecost R package."
+        text: `Slope-dependent cost analysis with the movecost R package. Plugin ${PLUGIN_VERSION}.`
       }),
       el(
         "div",
@@ -5153,7 +5165,7 @@ class MovecostPanel {
         }, "primary")
       );
     }
-    if (this.app.getViewBounds) {
+    if (this.app.getViewBounds || this.app.getMap?.()) {
       actions.append(
         button("Use current view", () => {
           const view = viewportPolygon(this.app);
@@ -6209,7 +6221,7 @@ class MovecostPanel {
 }
 const PLUGIN_ID = "movecost";
 const PANEL_ID = "movecost-panel";
-const VERSION = "0.1.4";
+const VERSION = PLUGIN_VERSION;
 class MovecostControl {
   constructor(onToggle) {
     this.onToggle = onToggle;

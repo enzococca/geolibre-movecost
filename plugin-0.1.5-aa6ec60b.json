@@ -1,8 +1,8 @@
 {
   "id": "movecost",
   "name": "movecost — least-cost analysis",
-  "version": "0.1.4",
-  "entry": "dist/index-b2bd01b2.js",
-  "style": "dist/style-b2bd01b2.css",
+  "version": "0.1.5",
+  "entry": "dist/index-aa6ec60b.js",
+  "style": "dist/style-aa6ec60b.css",
   "description": "Slope-dependent accumulated cost surfaces, least-cost paths, corridors, networks, cost allocation and isochrones, using the movecost R package."
 }
