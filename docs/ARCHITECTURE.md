@@ -195,12 +195,31 @@ are plain circle layers on the map and the vectors go through
 
 ## movecost 2.x vs 3.x
 
-CRAN currently carries `movecost` 3.0.0, which replaced the standalone
-`movecost()` / `movecorr()` / … functions with a compute-once design
-(`mc_surface()` then `mc_paths()`, `mc_corridor()`, …). The WebAssembly
-repository is behind CRAN and currently builds **2.2**, so the engine targets the
-2.x API, which is what actually installs in the browser today.
+CRAN carries **movecost 3.0.0** (published 2026-06-15); the plugin runs **2.2**
+on both paths. Checked 2026-09-09: `repo.r-wasm.org` (R 4.6) still builds 2.2,
+and the local R service pins 2.2 too.
 
-The switch, when the wasm build catches up, is contained in the
-`mcx_analysis_*()` functions: the request/response contract and the whole
-TypeScript side stay as they are.
+3.0.0 is a redesign rather than an update. `mc_surface()` builds the cost graph
+once and every analysis reuses it (`mc_accum`, `mc_paths`, `mc_corridor`,
+`mc_boundary`, `mc_alloc`, `mc_network`, `mc_rank`), multi-origin work goes
+through batched igraph Dijkstra queries, the stack moves to terra + sf + igraph
+(raster, sp, gdistance, chron and the hard elevatr dependency are gone), and
+plotting is decoupled into ggplot2 methods. The 26 cost functions are
+unchanged. The 2.x entry points — `movecost()`, `movecorr()`, `movealloc()`,
+`movebound()`, `movenetw()`, `moverank()` — survive only as **defunct stubs**
+that raise an error naming their replacement, so an engine written for 2.x does
+not misbehave on 3.0.0: it stops. `mcx_require()` checks the version and says
+so before anything else runs, and the install instructions pin 2.2
+(`remotes::install_version("movecost", "2.2")`) — `install.packages("movecost")`
+would otherwise fetch 3.0.0 and break the service.
+
+Porting is worth doing when it comes up: all four dependencies of 3.0.0 already
+have WebAssembly builds in the upstream repository (igraph 2.3.1, ggplot2
+4.0.3, terra 1.9-27, sf 1.1-1), and movecost itself is pure R
+(`NeedsCompilation: no`), so it can be added to `build/wasm-repo` with the
+same rwasm pipeline as terra. The gain would be real in the browser: four
+packages fewer to download, no gdistance conductance matrix rebuilt per call,
+and batched queries for the multi-origin analyses that are slowest today.
+
+The change is contained in the `mcx_analysis_*()` functions: the
+request/response contract and the whole TypeScript side stay as they are.

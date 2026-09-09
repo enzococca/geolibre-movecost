@@ -42,7 +42,10 @@ GeoLibre build by `scripts/capture-guide.mjs`.
 Once:
 
 ```r
-install.packages(c("plumber", "movecost", "sf", "terra", "raster", "sp", "jsonlite"))
+# movecost 3.0.0 changed its entire API (compute-once `mc_*` functions); this
+# plugin speaks the 2.x one, which is also what the WebAssembly build carries.
+install.packages(c("plumber", "sf", "terra", "raster", "sp", "jsonlite"))
+install.packages("remotes"); remotes::install_version("movecost", "2.2")
 install.packages(c("elevatr", "progress"))   # for "draw an area and download a DEM"
 ```
 

@@ -53,6 +53,20 @@ mcx_require <- function() {
   if (length(missing)) {
     mcx_stop("Missing R packages: ", paste(missing, collapse = ", "))
   }
+  # movecost 3.0.0 (CRAN, June 2026) replaced the 2.x entry points with a
+  # compute-once API (mc_surface() + mc_*) and left `movecost()` and friends as
+  # defunct stubs. This engine speaks the 2.x API, and the WebAssembly
+  # repository still carries 2.2, so say plainly what is wrong rather than
+  # letting a defunct error surface.
+  version <- utils::packageVersion("movecost")
+  if (version >= "3.0.0") {
+    mcx_stop(
+      "This plugin needs movecost 2.x (the WebAssembly build is 2.2); ",
+      "the installed version is ", as.character(version), ", whose 2.x entry points are ",
+      "defunct. Install the matching release with: ",
+      'remotes::install_version("movecost", "2.2")'
+    )
+  }
   invisible(TRUE)
 }
 

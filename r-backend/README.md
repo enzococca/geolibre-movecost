@@ -11,7 +11,10 @@ back to the in-browser runtime and says so.
 ## One-time setup
 
 ```r
-install.packages(c("plumber", "movecost", "sf", "terra", "raster", "sp", "jsonlite"))
+# movecost 3.0.0 changed its entire API (compute-once `mc_*` functions); this
+# plugin speaks the 2.x one, which is also what the WebAssembly build carries.
+install.packages(c("plumber", "sf", "terra", "raster", "sp", "jsonlite"))
+install.packages("remotes"); remotes::install_version("movecost", "2.2")
 
 # Optional, for "draw an area and download a DEM". `progress` is an elevatr
 # dependency that is only needed at call time, so install it explicitly.
