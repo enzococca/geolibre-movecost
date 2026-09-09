@@ -123,9 +123,14 @@ Restart GeoLibre and enable **movecost** in *Manage Plugins*.
 If the panel says *In-browser R* instead of *Local R service*, start the service
 and press **Recheck**.
 
-Vector results are added as normal GeoLibre layers. Raster results — accumulated
-cost, corridors, allocation — are drawn as map overlays and listed in the panel,
-since the host has no Layers-panel entry for an in-memory grid.
+Everything the plugin draws is a normal GeoLibre layer, organised in groups in
+the Layers panel: **movecost · input** holds the DEM and the origin /
+destination markers (green circles and red triangles, labelled `O1`, `D1`, … as
+the engine names them), and each run gets its own **movecost · ‹analysis› #n**
+group with its paths, isolines or zones and the cost rasters (accumulated
+cost, corridor, allocation, density) as georeferenced image layers. Earlier
+runs stay on the map so cost functions can be compared; remove a group from the
+Layers panel to drop a run.
 
 ### Keeping runs fast
 

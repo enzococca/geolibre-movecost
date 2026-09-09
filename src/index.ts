@@ -185,5 +185,6 @@ const plugin: GeoLibrePlugin = {
   },
 };
 
-export { plugin };
+/** `MovecostPanel` is exported for the headless host-layer test only. */
+export { plugin, MovecostPanel };
 export default plugin;

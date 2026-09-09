@@ -137,19 +137,59 @@ reprojecting. Without that every result comes back as "missing crs".
 
 ## Why the results are added the way they are
 
-Vector results go through `app.addGeoJsonLayer()`, so they become first-class
-entries in the Layers panel and persist with the project.
+Every layer the plugin draws — terrain, origin / destination markers, result
+vectors and cost rasters — is registered with the host through
+`app.registerExternalNativeLayer()` (`src/map/host-layers.ts`), so it is a
+first-class entry in the Layers panel, sits in a group, can be hidden, restyled
+and removed there, and persists with the project.
 
-The host has native layer helpers for tiles, COGs and Zarr stores, but none for
-an in-memory grid. Raster results are therefore painted onto a canvas and added
-as a MapLibre `image` source through `app.getMap()`. Those layers do **not**
-appear in the Layers panel, which is why the plugin panel keeps its own list and
-removal button. If a future host version grows an "add raster from array"
-helper, `addRasterOverlay()` is the single place to change.
+The documented use of that call is a layer the plugin already added to the map
+itself. We use it differently: with an **empty** `nativeLayerIds` the host does
+not treat the layer as external and renders it through its own pipeline from
+the registration's `type` and `source`/`geojson` (GeoLibre 2.9.0,
+`packages/map/src/layer-sync.ts`, `syncLayer`). That gives two things the public
+API otherwise lacks:
 
-Every optional host member is called with optional chaining and has a fallback:
-no `getMap()` means no click-to-place and no raster overlay, but vector results
-still land on the map.
+- a GeoJSON layer **with a chosen style** (`style: Partial<LayerStyle>`), which
+  is how origins become green circles and destinations red triangles, and why
+  paths, isolines and zones arrive coloured rather than in the default blue;
+- a raster from an in-memory grid: the payload is painted onto a canvas and
+  registered as `type: "image"` with a data-URL `source` and corner
+  coordinates — the same layer kind GeoLibre's own Raster Georeferencer
+  produces — so the host owns the MapLibre image source and its opacity slider
+  drives the layer natively.
+
+The earlier approach, `getMap().addSource()/addLayer()` straight on MapLibre,
+is why the cost rasters were invisible: a style layer the store does not know
+is classed as basemap by `MapController.getBasemapStyleLayers()`, and the
+basemap-opacity and basemap-visibility passes then pin it to the basemap's
+state. That path survives only as a fallback in `addRasterOverlay()`.
+
+Removal uses `app.unregisterExternalNativeLayer(id)`, whose host implementation
+removes any store layer by id. Groups come from `addLayerGroup` /
+`moveLayersToGroup`: one **movecost · input** group for the DEM and markers
+(marker layers are re-registered under fixed ids on every click, which updates
+the layer in place and keeps its group), and one group per run for the results,
+so earlier runs remain for comparison.
+
+Every optional host member is called with optional chaining and has a
+fallback, and rasters degrade in three steps:
+
+1. a host-owned `image` layer (above);
+2. without `registerExternalNativeLayer`, a raw MapLibre overlay through
+   `getMap()` — `addRasterOverlay()` in `src/map/raster-overlay.ts`. Because
+   the host classes such a layer as basemap, the overlay watches `styledata`
+   and `style.load` and reasserts itself: it re-adds source and layer after a
+   basemap change, restores its opacity and visibility when a host pass
+   changed them, and moves itself back to the top of the stack, until
+   `remove()` unhooks it;
+3. without the map at all, a thumbnail with the value range inside the panel's
+   results list (`renderRasterThumbnail()`), which is in fact kept for every
+   raster result as a readout.
+
+No `getMap()` also means no click-to-place; without the registry the markers
+are plain circle layers on the map and the vectors go through
+`addGeoJsonLayer`.
 
 ## movecost 2.x vs 3.x
 

@@ -4,11 +4,11 @@ import type { GeoLibreAppAPI, MapLibreLike } from "../types/geolibre";
 /**
  * Paints an engine raster payload onto the map as an image overlay.
  *
- * The host API has native layer helpers for tiles, COGs and Zarr stores, but
- * none for an in-memory grid, so accumulated-cost surfaces go on as a MapLibre
- * `image` source built from a canvas. Those layers live outside the Layers
- * panel, which is why this module keeps its own registry and the plugin panel
- * exposes its own visibility and removal controls.
+ * The decoding and colour-ramp rendering here feed `host-layers.ts`, which
+ * hands the painted canvas to GeoLibre as a native georeferenced image layer.
+ * `addRasterOverlay` below is the fallback for a host without that API: a raw
+ * MapLibre `image` source that the Layers panel cannot see — and that GeoLibre
+ * then mistakes for part of the basemap, so it is no longer the default path.
  */
 
 export interface ColourRamp {
@@ -181,9 +181,18 @@ export interface OverlayHandle {
 let overlaySeq = 0;
 
 /**
- * Adds a decoded raster to the map. Returns null when the host does not expose
- * the MapLibre instance — the caller then falls back to the panel preview,
- * which is why the whole path is optional-chained.
+ * Adds a decoded raster straight to the MapLibre map. This is the fallback
+ * for a host without `registerExternalNativeLayer` (see host-layers.ts), and
+ * it has to defend itself: GeoLibre classes a style layer its store does not
+ * know as part of the basemap, so its own basemap passes keep overwriting the
+ * layer's opacity and visibility, its layer sync moves user layers above it,
+ * and a basemap change (`setStyle`) wipes it altogether. The overlay therefore
+ * watches the style and reasserts itself — re-adding source and layer after a
+ * style reload, restoring its paint and visibility when the host changed them,
+ * and staying on top of the stack — until `remove()` is called.
+ *
+ * Returns null when the host does not expose the map at all; the caller then
+ * shows the raster inside the panel instead.
  */
 export function addRasterOverlay(
   app: GeoLibreAppAPI,
@@ -194,48 +203,86 @@ export function addRasterOverlay(
   if (!map) return null;
 
   const canvas = renderRasterToCanvas(raster, options);
+  const url = canvas.toDataURL("image/png");
   const id = `movecost-raster-${(overlaySeq += 1)}`;
   const sourceId = `${id}-source`;
   const { west, south, east, north } = raster.bounds;
+  const coordinates = [
+    [west, north],
+    [east, north],
+    [east, south],
+    [west, south],
+  ];
 
-  map.addSource(sourceId, {
-    type: "image",
-    url: canvas.toDataURL("image/png"),
-    coordinates: [
-      [west, north],
-      [east, north],
-      [east, south],
-      [west, south],
-    ],
-  });
-  map.addLayer({
-    id,
-    type: "raster",
-    source: sourceId,
-    paint: { "raster-opacity": options.opacity ?? 0.75, "raster-fade-duration": 0 },
-  });
+  let opacity = options.opacity ?? 0.75;
+  let visible = true;
+  let removed = false;
+  // Our own addLayer / setPaintProperty calls fire `styledata` too; the guard
+  // keeps the watcher from re-entering while we are the ones changing things.
+  let applying = false;
+
+  const ensure = (): void => {
+    if (removed || applying) return;
+    applying = true;
+    try {
+      if (!map.getSource(sourceId)) {
+        map.addSource(sourceId, { type: "image", url, coordinates });
+      }
+      if (!map.getLayer(id)) {
+        map.addLayer({
+          id,
+          type: "raster",
+          source: sourceId,
+          layout: { visibility: visible ? "visible" : "none" },
+          paint: { "raster-opacity": opacity, "raster-fade-duration": 0 },
+        });
+      } else {
+        const wantVisibility = visible ? "visible" : "none";
+        if (map.getLayoutProperty?.(id, "visibility") !== wantVisibility) {
+          map.setLayoutProperty?.(id, "visibility", wantVisibility);
+        }
+        if (map.getPaintProperty?.(id, "raster-opacity") !== opacity) {
+          map.setPaintProperty?.(id, "raster-opacity", opacity);
+        }
+      }
+      // Stay on top: the host's sync moves its own layers to the top of the
+      // stack on every pass, which would bury the overlay under a fill layer.
+      const order = map.getLayersOrder?.();
+      if (order && order[order.length - 1] !== id) map.moveLayer?.(id);
+    } catch {
+      /* a style mid-reload throws on most of these; the next event retries */
+    } finally {
+      applying = false;
+    }
+  };
+
+  const watcher = () => ensure();
+  ensure();
+  map.on("styledata", watcher);
+  map.on("style.load", watcher);
+
+  const stopWatching = () => {
+    map.off("styledata", watcher);
+    map.off("style.load", watcher);
+  };
 
   return {
     id,
     sourceId,
     layerId: id,
     bounds: [west, south, east, north],
-    remove: () => removeOverlay(map, id, sourceId),
-    setVisible: (visible) => {
-      try {
-        (map as unknown as { setLayoutProperty: (l: string, k: string, v: string) => void })
-          .setLayoutProperty(id, "visibility", visible ? "visible" : "none");
-      } catch {
-        /* the layer may already be gone */
-      }
+    remove: () => {
+      removed = true;
+      stopWatching();
+      removeOverlay(map, id, sourceId);
     },
-    setOpacity: (opacity) => {
-      try {
-        (map as unknown as { setPaintProperty: (l: string, k: string, v: number) => void })
-          .setPaintProperty(id, "raster-opacity", opacity);
-      } catch {
-        /* the layer may already be gone */
-      }
+    setVisible: (next) => {
+      visible = next;
+      ensure();
+    },
+    setOpacity: (next) => {
+      opacity = next;
+      ensure();
     },
   };
 }
@@ -251,6 +298,29 @@ function removeOverlay(map: MapLibreLike, layerId: string, sourceId: string): vo
   } catch {
     /* ignore */
   }
+}
+
+/**
+ * A thumbnail of a decoded raster for the plugin panel: the last resort when
+ * the host offers neither a layer registry nor the map, and a useful readout
+ * (with the value range) even when it does.
+ */
+export function renderRasterThumbnail(
+  raster: DecodedRaster,
+  options: RenderOptions = {},
+  maxWidth = 160,
+): HTMLCanvasElement {
+  const full = renderRasterToCanvas(raster, { ...options, opacity: 1 });
+  const scale = Math.min(1, maxWidth / full.width);
+  const thumb = document.createElement("canvas");
+  thumb.width = Math.max(1, Math.round(full.width * scale));
+  thumb.height = Math.max(1, Math.round(full.height * scale));
+  const ctx = thumb.getContext("2d");
+  if (ctx) {
+    ctx.imageSmoothingEnabled = scale < 1;
+    ctx.drawImage(full, 0, 0, thumb.width, thumb.height);
+  }
+  return thumb;
 }
 
 /** Builds a small legend strip for the panel. */

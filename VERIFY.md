@@ -61,25 +61,34 @@ The plugin is already installed at
    `examples/public/dtm.tif` is a synthetic 120 × 120 test grid in UTM 33N if
    you want something known-good first.
 
-   The terrain should appear on the map straight away, with a *Hide terrain*
-   button and the elevation range beside it. If it does not, that is the same
-   `getMap()` question as the raster results below — the analysis is unaffected.
+   The terrain should appear on the map straight away as a `DEM — …` layer
+   inside a **movecost · input** group in the Layers panel, with a *Hide
+   terrain* button and the elevation range in the plugin panel.
 
 5. **Place the points.** With the test DTM, click twice inside the raster —
    once for the origin, once for the destination. Click *Click on the map*,
-   place the point, then *Stop placing*.
+   place the point, then *Stop placing*. Each click shows up at once: origins as
+   green circles labelled `O1…`, destinations as red triangles labelled `D1…`,
+   both in the input group.
 
-6. **Run** with the default Tobler on-path function. You should get, as normal
-   GeoLibre layers: `movecost — Least-cost paths`, `movecost — Cost isolines`,
-   `movecost — Destinations with cost`; plus two raster overlays (accumulated
-   cost, cost surface) listed in the panel.
+6. **Run** with the default Tobler on-path function. You should get a new
+   **movecost · Least-cost paths #1** group holding `Least-cost paths`, `Cost
+   isolines`, `Destinations with cost`, and the two cost rasters (`Accumulated
+   cost`, `Cost surface`) as image layers with working opacity sliders.
+
+   `npm run test:host` runs this flow headlessly against a mock host
+   (`scripts/test-host-layers.mjs`) and checks the layer registrations, styles
+   and groups. It needs Chromium for Playwright (`npx playwright install
+   chromium` once).
 
 ### The two things most likely to be wrong
 
-- **Raster overlays.** They are added through `app.getMap()` as MapLibre image
-  sources, because the host has no "add raster from an array" helper. If they do
-  not appear, check whether `getMap()` returns null in this build — vector
-  results are unaffected either way, and the panel will say so.
+- **Layers not appearing.** All layers go through
+  `app.registerExternalNativeLayer` (with empty `nativeLayerIds`, so the host
+  renders them itself — see `docs/ARCHITECTURE.md`). On a host without that
+  API the vectors fall back to `addGeoJsonLayer` and the rasters to a raw
+  MapLibre overlay through `getMap()`, which GeoLibre treats as part of the
+  basemap and may hide — the panel says so.
 - **Panel docking.** The panel registers with `dock: "replace-style"`. If it
   lands somewhere awkward, change that one line in `src/index.ts`
   (`left-of-layers`, `right-of-layers`, `left-of-style`, `right-of-style`,

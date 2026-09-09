@@ -13,12 +13,20 @@ import type { DtmPreview } from "../engine/types";
 import { fetchTerrariumGrid } from "../map/terrain-tiles";
 import {
   COLOUR_RAMPS,
-  addRasterOverlay,
   decodeRaster,
   getRamp,
   renderLegend,
-  type OverlayHandle,
+  renderRasterThumbnail,
 } from "../map/raster-overlay";
+import {
+  addHostRasterLayer,
+  addHostVectorLayer,
+  addRawMarkerLayer,
+  groupHostLayers,
+  hostOwnsLayers,
+  type HostLayerHandle,
+} from "../map/host-layers";
+import { DESTINATION_STYLE, ORIGIN_STYLE, resultStyle } from "../map/styles";
 import {
   boundsOf,
   emptyPointSet,
@@ -78,8 +86,18 @@ const DEM_ZOOMS = [
 
 interface ProducedLayer {
   label: string;
-  removeFromMap: () => void;
+  kind: "raster" | "vector";
+  /** Null when the host gave us no way to draw it; the preview then stands in. */
+  handle: HostLayerHandle | null;
+  /** Thumbnail and value range, kept for every raster result. */
+  preview?: { canvas: HTMLCanvasElement; min: number; max: number };
 }
+
+/** Fixed store ids: the marker layers are refreshed in place, never duplicated. */
+const ORIGIN_LAYER_ID = "movecost-origin";
+const DESTINATION_LAYER_ID = "movecost-destination";
+const TERRAIN_LAYER_ID = "movecost-terrain";
+const INPUT_GROUP_NAME = "movecost · input";
 
 const DEFAULT_PARAMS: AnalysisParams = {
   funct: "t",
@@ -98,6 +116,12 @@ const DEFAULT_PARAMS: AnalysisParams = {
   netwType: "allpairs",
   lcpN: 3,
 };
+
+function formatValue(value: number): string {
+  if (!Number.isFinite(value)) return "—";
+  const abs = Math.abs(value);
+  return abs >= 100 ? value.toFixed(0) : abs >= 10 ? value.toFixed(1) : value.toFixed(2);
+}
 
 /**
  * The plugin's right-side workspace panel.
@@ -136,7 +160,7 @@ export class MovecostPanel {
    * fine for one run, wasteful once you start comparing cost functions.
    */
   private useArea = false;
-  private terrainOverlay: OverlayHandle | null = null;
+  private terrainOverlay: HostLayerHandle | null = null;
   private terrainPreview: DtmPreview | null = null;
   private terrainVisible = true;
 
@@ -146,6 +170,20 @@ export class MovecostPanel {
 
   private picking: "origin" | "destination" | null = null;
   private stopPicking: (() => void) | null = null;
+
+  /** Live marker layers for the chosen origins / destinations. */
+  private markers: { origin: HostLayerHandle | null; destination: HostLayerHandle | null } = {
+    origin: null,
+    destination: null,
+  };
+  /** Raw-map fallback markers, when the host cannot register layers. */
+  private rawMarkerCleanup: { origin: (() => void) | null; destination: (() => void) | null } = {
+    origin: null,
+    destination: null,
+  };
+  /** Layers-panel group holding the terrain and the markers. */
+  private inputGroupId: string | null = null;
+  private runCount = 0;
 
   private rampId = "viridis";
   private rasterOpacity = 0.75;
@@ -244,10 +282,15 @@ export class MovecostPanel {
     this.container = null;
   }
 
+  /**
+   * Deactivation removes what only makes sense while the panel is open — the
+   * click-to-place markers. The terrain and the results are ordinary GeoLibre
+   * layers the user may well want to keep, so they stay; the Layers panel
+   * removes them like any other layer.
+   */
   dispose(): void {
     this.cancelPicking();
-    this.clearTerrainOverlay();
-    this.clearProduced();
+    this.clearMarkers();
     this.disposeProgress?.();
     void this.backend?.close();
   }
@@ -525,6 +568,7 @@ export class MovecostPanel {
         () => {
           this.terrainVisible = !this.terrainVisible;
           this.terrainOverlay?.setVisible(this.terrainVisible);
+          if (this.terrainVisible) this.groupInputs();
           this.render();
         },
         "ghost",
@@ -631,6 +675,22 @@ export class MovecostPanel {
           (value) => {
             this.analysis = value as AnalysisId;
             this.extras = {};
+            // Point sets carry over, trimmed to what the new analysis accepts,
+            // and the marker layers are renamed to its labels.
+            const next = getAnalysis(this.analysis);
+            if (next.origin.max && this.origin.features.length > next.origin.max) {
+              this.origin = { ...this.origin, features: this.origin.features.slice(0, next.origin.max) };
+            }
+            if (!next.destination) {
+              this.destination = emptyPointSet();
+            } else if (next.destination.max && this.destination.features.length > next.destination.max) {
+              this.destination = {
+                ...this.destination,
+                features: this.destination.features.slice(0, next.destination.max),
+              };
+            }
+            this.refreshMarkers("origin");
+            this.refreshMarkers("destination");
             this.render();
           },
         ),
@@ -673,7 +733,7 @@ export class MovecostPanel {
   ): HTMLElement {
     const set = which === "origin" ? this.origin : this.destination;
     const canPick = Boolean(this.app.getMap?.());
-    const layers = listVectorLayers(this.app);
+    const layers = this.candidateLayers();
 
     const actions = el("div", { class: "mcx-actions" });
 
@@ -746,7 +806,7 @@ export class MovecostPanel {
   }
 
   private renderBarrierPicker(): HTMLElement {
-    const layers = listVectorLayers(this.app);
+    const layers = this.candidateLayers();
     const children: HTMLElement[] = [
       el("h4", { class: "mcx-subtitle", text: "Barriers (optional)" }),
       el("p", {
@@ -1003,6 +1063,13 @@ export class MovecostPanel {
           slider.addEventListener("input", () => {
             this.rasterOpacity = Number(slider.value);
           });
+          // Applied on release rather than per pixel: each change re-registers
+          // the layer with the host.
+          slider.addEventListener("change", () => {
+            for (const layer of this.produced) {
+              if (layer.kind === "raster") layer.handle?.setOpacity(this.rasterOpacity);
+            }
+          });
           return slider;
         })(),
         { inline: true },
@@ -1058,14 +1125,32 @@ export class MovecostPanel {
     if (this.produced.length) {
       const list = el("ul", { class: "mcx-layer-list" });
       for (const layer of this.produced) {
-        list.append(el("li", { class: "mcx-layer-list__item", text: layer.label }));
+        const item = el("li", { class: "mcx-layer-list__item" }, el("span", { text: layer.label }));
+        if (layer.preview) {
+          // The thumbnail doubles as the fallback rendering when the host gave
+          // us no way to draw the raster on the map.
+          item.append(
+            el(
+              "div",
+              { class: layer.handle ? "mcx-thumb" : "mcx-thumb mcx-thumb--only" },
+              layer.preview.canvas,
+              el("span", {
+                class: "mcx-thumb__range",
+                text: `${formatValue(layer.preview.min)} – ${formatValue(layer.preview.max)}${
+                  layer.handle ? "" : " (not drawn on the map)"
+                }`,
+              }),
+            ),
+          );
+        }
+        list.append(item);
       }
       children.push(list);
       children.push(
         el(
           "div",
           { class: "mcx-actions" },
-          button("Remove result layers", () => {
+          button("Remove these result layers", () => {
             this.clearProduced();
             this.render();
           }, "ghost"),
@@ -1134,12 +1219,17 @@ export class MovecostPanel {
     try {
       const preview = await backend.previewDtm(this.dtm.bytes, this.dtm.handle ?? null);
       this.terrainPreview = preview;
-      this.terrainOverlay = addRasterOverlay(this.app, decodeRaster(preview.raster), {
-        name: "movecost — terrain",
+      this.terrainOverlay = addHostRasterLayer(this.app, decodeRaster(preview.raster), {
+        id: TERRAIN_LAYER_ID,
+        name: `DEM — ${this.dtm.name}`,
         ramp: "terrain",
         opacity: 0.85,
       });
       this.terrainVisible = true;
+      // Re-add the markers so they sit above the terrain in the stack.
+      this.refreshMarkers("origin", true);
+      this.refreshMarkers("destination", true);
+      this.groupInputs();
       const b = preview.raster.bounds;
       this.app.fitBounds?.([b.west, b.south, b.east, b.north]);
     } catch (error) {
@@ -1172,6 +1262,7 @@ export class MovecostPanel {
       const next: PointSet = { kind: "click", label: "map clicks", features };
       if (which === "origin") this.origin = next;
       else this.destination = next;
+      this.refreshMarkers(which);
       this.render();
     });
     if (!session) {
@@ -1209,8 +1300,86 @@ export class MovecostPanel {
     } else {
       this.message = null;
     }
+    this.refreshMarkers(which);
     this.render();
   }
+
+  /**
+   * Keeps the marker layer for one point set in step with the panel state.
+   *
+   * Origins and destinations are separate host layers with distinct styles
+   * (green circles, red triangles — see styles.ts), each labelled with the id
+   * the engine will use, so a click shows up on the map at once and the cost
+   * table can be read back against it. An empty set removes the layer.
+   */
+  private refreshMarkers(which: "origin" | "destination", raise = false): void {
+    const set = which === "origin" ? this.origin : this.destination;
+    const prefix = which === "origin" ? "O" : "D";
+    const features = set.features.map((feature, index) => ({
+      ...feature,
+      properties: { ...(feature.properties ?? {}), mcx_id: `${prefix}${index + 1}`, mcx_role: which },
+    }));
+
+    if (!hostOwnsLayers(this.app)) {
+      const map = this.app.getMap?.() ?? null;
+      this.rawMarkerCleanup[which]?.();
+      this.rawMarkerCleanup[which] = null;
+      if (map && features.length) {
+        this.rawMarkerCleanup[which] = addRawMarkerLayer(
+          map,
+          which === "origin" ? ORIGIN_LAYER_ID : DESTINATION_LAYER_ID,
+          features,
+          which === "origin" ? "#16a34a" : "#dc2626",
+        );
+      }
+      return;
+    }
+
+    if (!features.length || raise) {
+      this.markers[which]?.remove();
+      this.markers[which] = null;
+    }
+    if (!features.length) return;
+
+    const spec = getAnalysis(this.analysis);
+    const label = which === "origin" ? spec.origin.label : spec.destination?.label ?? "Destinations";
+    this.markers[which] = addHostVectorLayer(this.app, {
+      id: which === "origin" ? ORIGIN_LAYER_ID : DESTINATION_LAYER_ID,
+      name: `${label} (${features.length})`,
+      features,
+      style: which === "origin" ? ORIGIN_STYLE : DESTINATION_STYLE,
+    });
+    this.groupInputs();
+  }
+
+  private clearMarkers(): void {
+    for (const which of ["origin", "destination"] as const) {
+      this.markers[which]?.remove();
+      this.markers[which] = null;
+      this.rawMarkerCleanup[which]?.();
+      this.rawMarkerCleanup[which] = null;
+    }
+  }
+
+  /** Terrain and markers share one Layers-panel group. */
+  private groupInputs(): void {
+    const ids = [this.terrainOverlay, this.markers.origin, this.markers.destination]
+      .filter((h): h is HostLayerHandle => Boolean(h))
+      .map((h) => h.id);
+    this.inputGroupId = groupHostLayers(this.app, INPUT_GROUP_NAME, ids, this.inputGroupId);
+  }
+
+  /**
+   * Layers offered as point / barrier sources: everything the host lists except
+   * the plugin's own marker layers, which would only feed the panel back its
+   * own state.
+   */
+  private candidateLayers() {
+    return listVectorLayers(this.app).filter(
+      (layer) => layer.id !== ORIGIN_LAYER_ID && layer.id !== DESTINATION_LAYER_ID,
+    );
+  }
+
 
   private collectParams(): AnalysisParams {
     const params: AnalysisParams = { ...this.params };
@@ -1287,7 +1456,9 @@ export class MovecostPanel {
         },
       );
 
-      this.clearProduced();
+      // Earlier runs stay on the map, in their own groups, so cost functions
+      // can be compared; the Layers panel removes a whole group in one go.
+      this.produced = [];
       if (response.ok) {
         this.addResultsToMap(response);
         this.message = null;
@@ -1305,83 +1476,113 @@ export class MovecostPanel {
     }
   }
 
+  /**
+   * Puts one run's outputs on the map as host layers in a group of their own.
+   *
+   * Rasters go first so the vectors drawn from them sit on top; the group is
+   * numbered per run so two runs with different cost functions can be
+   * compared side by side rather than overwriting each other.
+   */
   private addResultsToMap(response: Extract<EngineResponse, { ok: true }>): void {
     const spec = getAnalysis(response.analysis);
+    this.runCount += 1;
     const layerIds: string[] = [];
     let bounds: [number, number, number, number] | null = null;
 
+    for (const [key, payload] of Object.entries(response.result.rasters)) {
+      const meta = spec.layers[key];
+      const label = meta?.label ?? key;
+      const { handle, preview } = this.addRaster(payload, label);
+      if (handle) {
+        layerIds.push(handle.id);
+        bounds = unionBounds(bounds, handle.bounds);
+      }
+      if (handle || preview) this.produced.push({ label, kind: "raster", handle, preview });
+    }
+
     for (const [key, geojson] of Object.entries(response.result.vectors)) {
       const meta = spec.layers[key];
-      const label = `movecost — ${meta?.label ?? key}`;
+      const label = meta?.label ?? key;
       try {
         const collection = JSON.parse(geojson) as { features: GeoJsonFeature[] };
-        const layerId = this.app.addGeoJsonLayer(label, {
-          type: "FeatureCollection",
-          features: collection.features ?? [],
+        const features = collection.features ?? [];
+        if (!features.length) continue;
+        const handle = addHostVectorLayer(this.app, {
+          name: label,
+          features,
+          style: resultStyle(key, meta?.kind ?? "line"),
         });
-        layerIds.push(layerId);
-        bounds = unionBounds(bounds, boundsOf(collection.features ?? []));
-        this.produced.push({
-          label,
-          removeFromMap: () => this.app.removeLayer?.(layerId),
-        });
+        if (!handle) continue;
+        layerIds.push(handle.id);
+        bounds = unionBounds(bounds, boundsOf(features));
+        this.produced.push({ label, kind: "vector", handle });
       } catch (error) {
         this.message = { text: `Could not add "${label}": ${describeError(error)}`, tone: "warn" };
       }
     }
 
-    for (const [key, payload] of Object.entries(response.result.rasters)) {
-      const meta = spec.layers[key];
-      const label = `movecost — ${meta?.label ?? key}`;
-      const overlay = this.addRaster(payload, label);
-      if (overlay) {
-        bounds = unionBounds(bounds, overlay.bounds);
-        this.produced.push({ label, removeFromMap: overlay.remove });
-      }
-    }
-
-    if (layerIds.length > 1 && this.app.addLayerGroup) {
-      try {
-        this.app.addLayerGroup(`movecost — ${spec.label}`, layerIds);
-      } catch {
-        /* grouping is cosmetic */
-      }
-    }
+    groupHostLayers(this.app, `movecost · ${spec.label} #${this.runCount}`, layerIds, null);
 
     if (bounds) this.app.fitBounds?.(bounds);
   }
 
-  private addRaster(payload: RasterPayload, label: string): OverlayHandle | null {
+  /**
+   * Draws a raster result, degrading in three steps: a host-owned image layer,
+   * a self-healing raw MapLibre overlay (inside `addHostRasterLayer`), and
+   * finally a thumbnail in the panel — which is kept in every case, as a
+   * readout of the value range.
+   */
+  private addRaster(
+    payload: RasterPayload,
+    label: string,
+  ): { handle: HostLayerHandle | null; preview?: ProducedLayer["preview"] } {
+    let decoded;
     try {
-      const decoded = decodeRaster(payload);
-      const overlay = addRasterOverlay(this.app, decoded, {
+      decoded = decodeRaster(payload);
+    } catch (error) {
+      this.message = { text: `Could not decode "${label}": ${describeError(error)}`, tone: "warn" };
+      return { handle: null };
+    }
+    let preview: ProducedLayer["preview"];
+    try {
+      preview = {
+        canvas: renderRasterThumbnail(decoded, { ramp: this.rampId }),
+        min: decoded.min,
+        max: decoded.max,
+      };
+    } catch {
+      preview = undefined;
+    }
+    try {
+      const handle = addHostRasterLayer(this.app, decoded, {
         name: label,
         ramp: this.rampId,
         opacity: this.rasterOpacity,
       });
-      if (!overlay) {
+      if (!handle) {
         this.message = {
-          text: "This GeoLibre build does not expose the map to plugins, so raster results were not drawn. Vector results are unaffected.",
+          text: "This GeoLibre build exposes neither a layer registry nor the map to plugins, so raster results are shown here in the panel only. Vector results are unaffected.",
           tone: "warn",
         };
       }
-      return overlay;
+      return { handle, preview };
     } catch (error) {
       this.message = { text: `Could not draw "${label}": ${describeError(error)}`, tone: "warn" };
-      return null;
+      return { handle: null, preview };
     }
   }
 
   private clearProduced(): void {
     for (const layer of this.produced) {
       try {
-        layer.removeFromMap();
+        layer.handle?.remove();
       } catch {
         /* the layer may already be gone */
       }
     }
     this.produced = [];
   }
+
 
   private exportResults(response: Extract<EngineResponse, { ok: true }>): void {
     const features: GeoJsonFeature[] = [];

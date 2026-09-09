@@ -287,6 +287,36 @@
   margin: 1px 0;
 }
 
+/* Raster thumbnails in the results list; the "--only" variant is the fallback
+   rendering when the host gave us no way to draw the raster on the map. */
+.mcx-thumb {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 3px 0 5px;
+}
+
+.mcx-thumb canvas {
+  display: block;
+  max-width: 96px;
+  max-height: 72px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 3px;
+  image-rendering: pixelated;
+  background:
+    repeating-conic-gradient(hsl(var(--muted)) 0 25%, transparent 0 50%) 0 0 / 8px 8px;
+}
+
+.mcx-thumb--only canvas {
+  max-width: 100%;
+  max-height: 240px;
+}
+
+.mcx-thumb__range {
+  font-size: 10.5px;
+  color: hsl(var(--muted-foreground));
+}
+
 .mcx-legend canvas {
   display: block;
   width: 100%;

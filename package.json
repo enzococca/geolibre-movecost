@@ -13,12 +13,14 @@
     "verify:zip": "python3 scripts/check-plugin-zip.py",
     "install:geolibre": "npm run build && node scripts/install-plugin.mjs",
     "serve:demo": "vite --config vite.demo.config.ts",
-    "test:engine": "Rscript scripts/test-engine.R"
+    "test:engine": "Rscript scripts/test-engine.R",
+    "test:host": "node scripts/test-host-layers.mjs"
   },
   "dependencies": {
     "webr": "0.6.0"
   },
   "devDependencies": {
+    "playwright": "^1.63.0",
     "typescript": "^5.7.2",
     "vite": "^6.0.7"
   }
