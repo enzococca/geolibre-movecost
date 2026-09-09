@@ -4545,7 +4545,7 @@ const KIND_STYLES = {
 function resultStyle(key, kind) {
   return RESULT_STYLES[key] ?? KIND_STYLES[kind] ?? {};
 }
-const PLUGIN_VERSION = "0.1.7";
+const PLUGIN_VERSION = "0.1.8";
 const ANALYSES = [
   {
     id: "paths",
@@ -6063,8 +6063,12 @@ class MovecostPanel {
     if (!this.markers.origin && !this.markers.destination) return;
     const oldGroup = this.locationsGroupId;
     this.locationsGroupId = null;
-    this.refreshMarkers("origin", true);
-    this.refreshMarkers("destination", true);
+    for (const which of ["origin", "destination"]) {
+      this.markers[which]?.remove();
+      this.markers[which] = null;
+    }
+    this.refreshMarkers("origin");
+    this.refreshMarkers("destination");
     if (oldGroup && oldGroup !== this.locationsGroupId) {
       try {
         this.app.removeLayerGroup?.(oldGroup);
