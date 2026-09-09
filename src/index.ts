@@ -9,7 +9,7 @@ import type {
 
 const PLUGIN_ID = "movecost";
 const PANEL_ID = "movecost-panel";
-const VERSION = "0.1.0";
+const VERSION = "0.1.1";
 
 /**
  * A map-corner button that opens the workspace panel.
