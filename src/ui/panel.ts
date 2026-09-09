@@ -157,15 +157,28 @@ export class MovecostPanel {
   }
 
   /**
-   * Prefers a copy of webR shipped alongside the plugin manifest, because the
-   * desktop host's CSP will not start a worker from another origin. Returns
-   * undefined — and so the CDN default — when no such copy is installed.
+   * A copy of webR shipped alongside the plugin manifest takes precedence over
+   * the CDN default. Returns undefined — and so the default — when none is.
    */
   private webrBaseUrl(): string | undefined {
+    return this.pluginAsset("webr/") ?? undefined;
+  }
+
+  /**
+   * The repository published next to the manifest, when there is one. That is
+   * where the rebuilt terra lives (docs/TERRA-WASM.md): the plugin site puts it
+   * at `wasm-repo/`, so a manifest-URL install finds it with no configuration.
+   */
+  private pluginRepos(): string[] {
+    const repo = this.pluginAsset("wasm-repo");
+    return repo ? [repo.replace(/\/$/, "")] : [];
+  }
+
+  private pluginAsset(relativePath: string): string | null {
     try {
-      return this.app.resolvePluginAssetUrl?.("movecost", "webr/") ?? undefined;
+      return this.app.resolvePluginAssetUrl?.("movecost", relativePath) ?? null;
     } catch {
-      return undefined;
+      return null;
     }
   }
 
@@ -189,12 +202,13 @@ export class MovecostPanel {
       const health = await probeBackend(DEFAULT_BACKEND_URL);
       const backend: AnalysisBackend = health
         ? new HttpBackend(DEFAULT_BACKEND_URL, health.versions ?? null)
-        : new MovecostEngine(this.webrBaseUrl());
+        : new MovecostEngine(this.webrBaseUrl(), this.pluginRepos());
       this.backendNote = health
         ? null
-        : `No local R service on ${DEFAULT_BACKEND_URL}. Falling back to the in-browser runtime, ` +
-          `which cannot currently load the terra package — start the R service for a working analysis ` +
-          `(see r-backend/README.md).`;
+        : `No local R service on ${DEFAULT_BACKEND_URL}, so R runs in the page. That works, ` +
+          `but it is roughly a hundred times slower and cannot download elevation — load a ` +
+          `GeoTIFF. The first run fetches about 65 MB. For real work, start the R service ` +
+          `(r-backend/README.md) and press Recheck.`;
       this.disposeProgress = backend.onProgress((event) => {
         this.progress = event.phase === "done" || event.phase === "error" ? null : event;
         this.renderStatus();
@@ -370,8 +384,8 @@ export class MovecostPanel {
     if (this.backend && !canDownload) {
       children.push(
         note(
-          "Downloading elevation needs the local R service — the in-browser runtime has no " +
-            "network access to the tile server. Start the service, or load a GeoTIFF instead.",
+          "Downloading elevation needs the local R service; the in-browser runtime cannot " +
+            "reach the tile server. Switch to \"Load a GeoTIFF from disk\" above.",
           "warn",
         ),
       );

@@ -10,9 +10,21 @@
 /** webR release whose wasm build we load. Must match the `webr` npm dependency. */
 export const WEBR_VERSION = "0.6.0";
 
-/** Where webR's `R.bin.wasm`, `webr-worker.js` and friends are served from. */
+/**
+ * Where webR's `webr-worker.js`, `R.js`, `R.wasm` and the virtual filesystem
+ * are served from.
+ *
+ * The npm package on jsDelivr rather than webR's own CDN, and the reason is
+ * GeoLibre's Content-Security-Policy. For a cross-origin base URL webR fetches
+ * the worker script itself and starts it from a `blob:` URL, which
+ * `worker-src blob: 'self'` allows; inside that worker, `importScripts()` of
+ * `R.js` is governed by `script-src`, which lists `https://cdn.jsdelivr.net/npm/`
+ * and not `webr.r-wasm.org`. The wasm and package archives arrive through
+ * `fetch`, covered by `connect-src https:`. Verified against webR 0.6.0.
+ */
 export const WEBR_BASE_URL =
-  readOverride("MOVECOST_WEBR_BASE_URL") ?? `https://webr.r-wasm.org/v${WEBR_VERSION}/`;
+  readOverride("MOVECOST_WEBR_BASE_URL") ??
+  `https://cdn.jsdelivr.net/npm/webr@${WEBR_VERSION}/dist/`;
 
 /**
  * The upstream CRAN-for-WebAssembly repository. This is the repository ROOT:

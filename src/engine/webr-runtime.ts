@@ -1,12 +1,6 @@
 import { WebR } from "webr";
 import engineSource from "./movecost-engine.R?raw";
-import {
-  R_PACKAGES,
-  R_PACKAGE_WEIGHTS,
-  WASM_CRAN_REPO,
-  WASM_CRAN_REPOS,
-  WEBR_BASE_URL,
-} from "../config";
+import { R_PACKAGES, R_PACKAGE_WEIGHTS, WASM_CRAN_REPOS, WEBR_BASE_URL } from "../config";
 import type {
   AnalysisId,
   AnalysisParams,
@@ -41,7 +35,19 @@ export class MovecostEngine implements AnalysisBackend {
    * allowed. Falls back to the CDN, which is what the demo page and browser
    * builds use.
    */
-  constructor(private readonly baseUrl: string = WEBR_BASE_URL) {}
+  constructor(
+    private readonly baseUrl: string = WEBR_BASE_URL,
+    /**
+     * Repositories consulted before the configured ones — typically the
+     * `wasm-repo/` published next to the plugin manifest, carrying the rebuilt
+     * terra (see docs/TERRA-WASM.md).
+     */
+    private readonly extraRepos: string[] = [],
+  ) {}
+
+  private get repos(): string[] {
+    return [...this.extraRepos, ...WASM_CRAN_REPOS.filter((r) => !this.extraRepos.includes(r))];
+  }
 
   private webR: WebR | null = null;
   private booting: Promise<WebR> | null = null;
@@ -86,7 +92,7 @@ export class MovecostEngine implements AnalysisBackend {
 
       const webR = new WebR({
         baseUrl: this.baseUrl,
-        repoUrl: WASM_CRAN_REPO,
+        repoUrl: this.repos[0],
         interactive: false,
       });
       await webR.init();
@@ -99,7 +105,7 @@ export class MovecostEngine implements AnalysisBackend {
           `Installing R package ${pkg}…`,
           Math.min(0.99, done / total),
         );
-        await installPackage(webR, pkg);
+        await installPackage(webR, pkg, this.repos);
         done += R_PACKAGE_WEIGHTS[pkg] ?? 1;
       }
 
@@ -264,20 +270,20 @@ async function cleanupDir(webR: WebR, dir: string): Promise<void> {
  * across releases; try the modern shape first and fall back so the plugin keeps
  * working against whichever build the host has cached.
  */
-async function installPackage(webR: WebR, pkg: string): Promise<void> {
+async function installPackage(webR: WebR, pkg: string, repos: string[]): Promise<void> {
   const install = webR.installPackages.bind(webR) as (
     packages: string[],
     options?: unknown,
   ) => Promise<void>;
   try {
-    await install([pkg], { repos: WASM_CRAN_REPOS, quiet: true });
+    await install([pkg], { repos, quiet: true });
   } catch (error) {
     try {
       await install([pkg]);
     } catch {
       throw new Error(
         `Could not install the R package "${pkg}". ` +
-          `Check that ${WASM_CRAN_REPOS.join(" and ")} are reachable from GeoLibre. ` +
+          `Check that ${repos.join(" and ")} are reachable from GeoLibre. ` +
           `Original error: ${describeError(error)}`,
       );
     }
