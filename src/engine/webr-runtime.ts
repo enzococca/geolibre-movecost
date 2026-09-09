@@ -4,6 +4,7 @@ import {
   R_PACKAGES,
   R_PACKAGE_WEIGHTS,
   WASM_CRAN_REPO,
+  WASM_CRAN_REPOS,
   WEBR_BASE_URL,
 } from "../config";
 import type {
@@ -269,14 +270,14 @@ async function installPackage(webR: WebR, pkg: string): Promise<void> {
     options?: unknown,
   ) => Promise<void>;
   try {
-    await install([pkg], { repos: [WASM_CRAN_REPO], quiet: true });
+    await install([pkg], { repos: WASM_CRAN_REPOS, quiet: true });
   } catch (error) {
     try {
       await install([pkg]);
     } catch {
       throw new Error(
         `Could not install the R package "${pkg}". ` +
-          `Check that ${WASM_CRAN_REPO} is reachable from GeoLibre. ` +
+          `Check that ${WASM_CRAN_REPOS.join(" and ")} are reachable from GeoLibre. ` +
           `Original error: ${describeError(error)}`,
       );
     }

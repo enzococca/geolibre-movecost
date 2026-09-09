@@ -15,12 +15,28 @@ export const WEBR_BASE_URL =
   readOverride("MOVECOST_WEBR_BASE_URL") ?? `https://webr.r-wasm.org/v${WEBR_VERSION}/`;
 
 /**
- * CRAN-for-WebAssembly repository holding movecost and its dependencies.
- * This is the repository ROOT: webR appends `bin/emscripten/contrib/<R version>/`
- * itself, so do not include that path here.
+ * The upstream CRAN-for-WebAssembly repository. This is the repository ROOT:
+ * webR appends `bin/emscripten/contrib/<R version>/` itself, so the path is not
+ * part of it.
  */
-export const WASM_CRAN_REPO =
-  readOverride("MOVECOST_WASM_REPO") ?? "https://repo.r-wasm.org";
+export const UPSTREAM_WASM_REPO = "https://repo.r-wasm.org";
+
+/**
+ * Repositories to install from, in order of preference.
+ *
+ * `MOVECOST_WASM_REPO` prepends a repository rather than replacing the upstream
+ * one, which matters: a repository built by `scripts/build-terra-wasm.sh`
+ * carries the one or two packages that needed rebuilding, and everything else
+ * has to keep coming from upstream. Setting it as the sole repository makes
+ * even `jsonlite` unresolvable.
+ */
+export const WASM_CRAN_REPOS: string[] = (() => {
+  const override = readOverride("MOVECOST_WASM_REPO");
+  return override ? [override, UPSTREAM_WASM_REPO] : [UPSTREAM_WASM_REPO];
+})();
+
+/** The repository webR treats as its default; the full list is used on install. */
+export const WASM_CRAN_REPO = WASM_CRAN_REPOS[0];
 
 /**
  * Installed in this order. movecost 2.x sits on the raster/sp stack; terra and

@@ -24,17 +24,28 @@ Reproducible on R 4.5 and R 4.6 builds, in a clean session, with and without
 cross-origin isolation. The failure happens inside terra's `.onLoad`, which
 calls `.gdinit()` → `.gdalinit()` to initialise GDAL and PROJ.
 
-`resolved is not a function` is Emscripten's unresolved-import stub: terra's
-`terra.so` imports a symbol that webR's `R.wasm` does not export. It is a
-build-compatibility problem between the two, not a configuration problem on our
-side — `sf`, which links the same GDAL/PROJ/GEOS stack, loads fine.
+`resolved is not a function` is Emscripten's unresolved-import stub. The symbol
+behind it has since been identified: terra imports seven PROJ functions —
+`internal_proj_create`, `internal_proj_destroy`,
+`internal_proj_context_set_search_paths`, `internal_proj_context_is_network_enabled`,
+`internal_proj_context_set_enable_network`, `internal_proj_context_set_url_endpoint`,
+`internal_proj_context_get_url_endpoint` — that nothing loaded alongside it
+provides. They are exactly the calls `.gdinit()` makes.
 
-The related and better-known issue is
+The names are renamed because `gdal-config --cflags` in the webR sysroot passes
+`-DPROJ_RENAME_SYMBOLS`; the standalone `libproj.a` there exports the plain
+names instead. Rebuilding terra 1.9-46 with the same toolchain reproduces the
+failure identically, so it is a sysroot packaging mismatch rather than a stale
+binary. Full account, including what was tried, in
+[TERRA-WASM.md](TERRA-WASM.md).
+
+A related and better-known issue is
 [rspatial/terra#1259](https://github.com/rspatial/terra/issues/1259): terra used
 to call `proj_context_set_enable_network()` on load, which the browser sandbox
 cannot support. That call **is** now guarded by `#ifndef __EMSCRIPTEN__`, in
-1.9-27 as well as in current sources, so the guard is not the remaining problem —
-something else in the GDAL init path is.
+1.9-27 as well as in current sources, so it is not the remaining problem —
+though `internal_proj_context_set_enable_network` still appears among the
+unresolved imports, from the other call site.
 
 The failure cascades over the whole raster stack:
 

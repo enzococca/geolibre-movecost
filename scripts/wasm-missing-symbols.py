@@ -1,14 +1,24 @@
 #!/usr/bin/env python3
 """
-Find which symbols a wasm side module (an R package's .so) imports that the main
-module (webR's R.wasm) does not export.
+Find which symbols a wasm side module (an R package's .so) imports that nothing
+it is loaded alongside provides.
 
 Emscripten turns each unresolved import into a stub that throws
 "resolved is not a function" the moment R calls into it, which is exactly the
-error `library(terra)` produces inside webR — so this is how we identify the
+error `library(terra)` produces inside webR — so this is how to identify the
 symbol responsible rather than guessing.
 
-    python3 scripts/wasm-missing-symbols.py R.wasm terra.so [more.so ...]
+    python3 scripts/wasm-missing-symbols.py TARGET.so PROVIDER [PROVIDER ...]
+
+The providers are every module loaded before the target: webR's `R.wasm` (fetch
+it and gunzip — it is served gzipped) plus the `.so` of each package the target
+links against. A package's C++ symbols come from *its dependencies'* side
+modules, not from R.wasm, so leaving `Rcpp.so` out of the provider list reports
+thousands of false positives.
+
+    curl -sL https://webr.r-wasm.org/v0.6.0/R.wasm | gunzip > R.bin.wasm
+    tar xzf terra_1.9-46.tgz && tar xzf Rcpp_1.1.2.tgz
+    python3 scripts/wasm-missing-symbols.py terra/libs/terra.so R.bin.wasm Rcpp/libs/Rcpp.so
 """
 import sys
 import struct
@@ -82,7 +92,16 @@ def imports(data):
                 if limits & 1:
                     _, i = read_uleb(body, i)
             elif kind == 3:             # global
-                i += 2
+                i += 1                  # valtype
+                i += 1                  # mutability
+            elif kind == 4:             # tag — present because terra and other
+                i += 1                  # C++ packages build with -fwasm-exceptions
+                _, i = read_uleb(body, i)
+            else:
+                raise ValueError(
+                    f"unknown import kind {kind} for {module}.{field}; "
+                    "the parser needs updating"
+                )
             found.append((module, field, kind))
     return found
 
@@ -91,19 +110,42 @@ def main(argv):
     if len(argv) < 3:
         print(__doc__)
         return 2
-    main_exports = exports(open(argv[1], "rb").read())
-    print(f"{argv[1]}: {len(main_exports)} exports")
 
+    target = argv[1]
+    provided = set()
     for path in argv[2:]:
-        data = open(path, "rb").read()
+        names = exports(open(path, "rb").read())
+        provided |= names
+        print(f"provider {path}: {len(names)} exports")
+
+    data = open(target, "rb").read()
+    try:
         wanted = imports(data)
-        missing = [
-            (m, f) for (m, f, kind) in wanted if kind == 0 and f not in main_exports
-        ]
-        print(f"\n{path}: {len(wanted)} imports, {len(missing)} unresolved")
-        for module, field in missing[:80]:
-            print(f"  MISSING  {module}.{field}")
-    return 0
+    except Exception as exc:  # noqa: BLE001 - a parse failure is a result too
+        print(f"\n{target}: could not parse the import section — {exc}")
+        return 1
+
+    # Only function imports matter: an unresolved one becomes the stub that
+    # throws "resolved is not a function" the moment R calls into it. GOT.mem /
+    # GOT.func entries are address relocations the dynamic linker fills in, not
+    # calls, so they are excluded.
+    missing = [
+        (m, f)
+        for (m, f, kind) in wanted
+        if kind == 0 and m == "env" and f not in provided
+    ]
+    functions = sum(1 for _, _, kind in wanted if kind == 0)
+    print(
+        f"\n{target}: {len(wanted)} imports ({functions} functions), "
+        f"{len(missing)} unresolved"
+    )
+    for module, field in missing[:200]:
+        print(f"  MISSING  {module}.{field}")
+    if len(missing) > 200:
+        print(f"  … and {len(missing) - 200} more")
+    if not missing:
+        print("  none — every function import is satisfied by the providers.")
+    return 1 if missing else 0
 
 
 if __name__ == "__main__":
