@@ -54,6 +54,8 @@ import {
 interface DtmFile {
   name: string;
   bytes: Uint8Array;
+  /** Set when the backend keeps the DTM in its R session instead of `bytes`. */
+  handle?: string;
   /** Present when the DEM was downloaded rather than picked from disk. */
   summary?: DemSummary;
 }
@@ -195,6 +197,11 @@ export class MovecostPanel {
       void this.backend?.close();
       this.backend = null;
       this.backendProbe = null;
+      // A handle names a raster inside the old backend's R session.
+      if (this.dtm?.handle) {
+        this.dtm = null;
+        this.clearTerrainOverlay();
+      }
     }
     if (this.backend) return Promise.resolve(this.backend);
     if (this.backendProbe) return this.backendProbe;
@@ -348,7 +355,9 @@ export class MovecostPanel {
           text: s
             ? `${this.dtm.name} — ${s.width} × ${s.height} cells at ${s.resolution.toFixed(1)} m, ` +
               `${Math.round(s.elevation.min ?? 0)}–${Math.round(s.elevation.max ?? 0)} m, ${s.crs}`
-            : `${this.dtm.name} — ${formatBytes(this.dtm.bytes.byteLength)}`,
+            : this.dtm.handle
+              ? `${this.dtm.name} — held in the R session`
+              : `${this.dtm.name} — ${formatBytes(this.dtm.bytes.byteLength)}`,
         }),
       );
     }
@@ -579,8 +588,8 @@ export class MovecostPanel {
         result = await backend.dtmFromGrid!(grid, areaGeoJson);
         result.summary.zoom = this.demZoom;
       }
-      const { bytes, summary } = result;
-      this.dtm = { name: `DEM (zoom ${summary.zoom})`, bytes, summary };
+      const { bytes, summary, handle } = result;
+      this.dtm = { name: `DEM (zoom ${summary.zoom})`, bytes, handle, summary };
       this.useArea = false;
       const cells = summary.width * summary.height;
       this.message =
@@ -1120,7 +1129,7 @@ export class MovecostPanel {
     if (typeof backend.previewDtm !== "function") return;
 
     try {
-      const preview = await backend.previewDtm(this.dtm.bytes);
+      const preview = await backend.previewDtm(this.dtm.bytes, this.dtm.handle ?? null);
       this.terrainPreview = preview;
       this.terrainOverlay = addRasterOverlay(this.app, decodeRaster(preview.raster), {
         name: "movecost — terrain",
@@ -1261,7 +1270,8 @@ export class MovecostPanel {
       const response = await backend.run(
         { analysis: this.analysis, params },
         {
-          dtm: this.dtm?.bytes ?? null,
+          dtm: this.dtm && !this.dtm.handle ? this.dtm.bytes : null,
+          dtmHandle: this.dtm?.handle ?? null,
           studyplot:
             !this.dtm && this.area
               ? JSON.stringify(toFeatureCollection(this.area.features))

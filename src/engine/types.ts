@@ -55,6 +55,7 @@ export interface EngineRequest {
   analysis: AnalysisId;
   /** Absent when `studyplotPath` is given and movecost fetches the terrain. */
   dtmPath?: string | null;
+  dtmHandle?: string | null;
   studyplotPath?: string | null;
   originPath: string;
   destinPath?: string | null;
@@ -106,6 +107,12 @@ export type EngineResponse = EngineResponseOk | EngineResponseError;
 export interface EngineInputs {
   /** Raw GeoTIFF bytes of the digital terrain model, when one is loaded. */
   dtm?: Uint8Array | null;
+  /**
+   * A DTM the backend already holds in its R session (webR keeps downloaded
+   * terrain in memory rather than writing a GeoTIFF). Takes precedence over
+   * `dtm` when set.
+   */
+  dtmHandle?: string | null;
   /**
    * GeoJSON polygon to derive the terrain from instead. movecost's own
    * `studyplot` path: it downloads elevation for the area on every run.

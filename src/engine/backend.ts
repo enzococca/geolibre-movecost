@@ -27,7 +27,10 @@ export interface DemSummary {
 }
 
 export interface DemResult {
+  /** GeoTIFF bytes; empty when the backend keeps the DTM in its own session. */
   bytes: Uint8Array;
+  /** Set when the DTM lives in the backend's R session instead of `bytes`. */
+  handle?: string;
   summary: DemSummary;
 }
 
@@ -48,7 +51,7 @@ export interface AnalysisBackend {
    */
   fetchDem?: (areaGeoJson: string, zoom: number) => Promise<DemResult>;
   /** Summarise a loaded DTM so it can be drawn on the map. */
-  previewDtm?: (dtm: Uint8Array) => Promise<DtmPreview>;
+  previewDtm?: (dtm: Uint8Array, handle?: string | null) => Promise<DtmPreview>;
   /**
    * Turn a grid the page fetched itself (see `map/terrain-tiles.ts`) into a
    * projected GeoTIFF. This is how the in-browser backend gets terrain for a
@@ -285,7 +288,8 @@ export class HttpBackend implements AnalysisBackend {
     return { bytes: tif, summary };
   }
 
-  async previewDtm(dtm: Uint8Array): Promise<DtmPreview> {
+  async previewDtm(dtm: Uint8Array, handle?: string | null): Promise<DtmPreview> {
+    if (handle) throw new Error("The local R service holds no DTM handles; send the GeoTIFF instead.");
     const form = new FormData();
     form.append("dtm", new Blob([dtm as BlobPart], { type: "image/tiff" }), "dtm.tif");
     const response = await fetch(`${this.url}/preview`, { method: "POST", body: form });

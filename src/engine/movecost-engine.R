@@ -21,6 +21,11 @@
 mcx_env <- new.env(parent = emptyenv())
 mcx_env$log <- character(0)
 mcx_env$target_crs <- NULL
+# DTMs kept in this R session rather than on disk, by handle. Needed under webR,
+# where terra::writeRaster() never returns for rasters above a couple of
+# thousand cells; the analyses and the preview accept a handle in place of a
+# path, so a downloaded DTM never has to become a file there.
+mcx_env$dtms <- list()
 
 mcx_log <- function(...) {
   msg <- paste0(...)
@@ -101,6 +106,22 @@ mcx_prepare_dtm <- function(path, reproject = TRUE) {
   }
   names(r) <- "dtm"
   r
+}
+
+#' The DTM a request refers to: a kept in-memory raster by handle, or a file.
+mcx_resolve_dtm <- function(req, reproject = TRUE) {
+  handle <- req$dtmHandle
+  if (!is.null(handle) && nzchar(handle)) {
+    r <- mcx_env$dtms[[handle]]
+    if (is.null(r)) {
+      mcx_stop("The DTM '", handle, "' is no longer in this R session. Download it again.")
+    }
+    return(r)
+  }
+  if (is.null(req$dtmPath) || !nzchar(req$dtmPath) || !file.exists(req$dtmPath)) {
+    return(NULL)
+  }
+  mcx_prepare_dtm(req$dtmPath, reproject = reproject)
 }
 
 # --- vector helpers ----------------------------------------------------------
@@ -607,18 +628,27 @@ mcx_grid_to_dtm <- function(request_path, response_path = NULL) {
       }
       names(r) <- "dtm"
 
+      keep_as <- mcx_pick(req, "keepAs", NULL)
       out_path <- mcx_pick(req, "outPath", NULL)
-      if (is.null(out_path)) out_path <- file.path(dirname(request_path), "dem.tif")
-      terra::writeRaster(r, out_path, overwrite = TRUE, gdal = c("COMPRESS=DEFLATE"))
+      if (!is.null(keep_as) && nzchar(keep_as)) {
+        mcx_env$dtms[[keep_as]] <- r
+        out_bytes <- 0
+        out_path <- NULL
+      } else {
+        if (is.null(out_path)) out_path <- file.path(dirname(request_path), "dem.tif")
+        terra::writeRaster(r, out_path, overwrite = TRUE, gdal = c("COMPRESS=DEFLATE"))
+        out_bytes <- file.info(out_path)$size
+      }
 
-      e84 <- terra::ext(terra::project(r, "EPSG:4326"))
+      e84 <- terra::project(terra::ext(r), from = terra::crs(r), to = "EPSG:4326")
       finite <- terra::values(r, mat = FALSE)
       finite <- finite[!is.na(finite)]
 
       list(
         ok = TRUE,
         path = out_path,
-        bytes = file.info(out_path)$size,
+        handle = keep_as,
+        bytes = out_bytes,
         crs = paste0("EPSG:", epsg),
         zoom = mcx_pick(req, "zoom", NA_integer_),
         width = terra::ncol(r),
@@ -628,7 +658,8 @@ mcx_grid_to_dtm <- function(request_path, response_path = NULL) {
           min = if (length(finite)) min(finite) else NA_real_,
           max = if (length(finite)) max(finite) else NA_real_
         ),
-        bounds = list(west = e84$xmin, south = e84$ymin, east = e84$xmax, north = e84$ymax),
+        bounds = list(west = terra::xmin(e84), south = terra::ymin(e84),
+                      east = terra::xmax(e84), north = terra::ymax(e84)),
         elapsedSeconds = as.numeric(difftime(Sys.time(), started, units = "secs")),
         log = mcx_env$log
       )
@@ -659,7 +690,8 @@ mcx_preview_dtm <- function(request_path, response_path = NULL) {
     {
       mcx_require()
       req <- jsonlite::fromJSON(request_path, simplifyVector = TRUE)
-      r <- mcx_prepare_dtm(req$dtmPath, reproject = TRUE)
+      r <- mcx_resolve_dtm(req, reproject = TRUE)
+      if (is.null(r)) mcx_stop("No DTM to preview.")
       mcx_env$target_crs <- sf::st_crs(terra::crs(r))
 
       values <- terra::values(r, mat = FALSE)
@@ -721,13 +753,13 @@ mcx_run <- function(request_path, response_path = NULL) {
       # area that movecost itself resolves into elevation through elevatr. The
       # second is movecost's own documented path (`studyplot` + `z`), so it is
       # passed straight through rather than reimplemented here.
-      has_dtm <- !is.null(req$dtmPath) && nzchar(req$dtmPath) && file.exists(req$dtmPath)
+      dtm_rast <- mcx_resolve_dtm(
+        req,
+        reproject = !identical(mcx_pick(params, "autoReproject", TRUE), FALSE)
+      )
+      has_dtm <- !is.null(dtm_rast)
 
       if (has_dtm) {
-        dtm_rast <- mcx_prepare_dtm(
-          req$dtmPath,
-          reproject = !identical(mcx_pick(params, "autoReproject", TRUE), FALSE)
-        )
         target_crs <- sf::st_crs(terra::crs(dtm_rast))
         mcx_env$target_crs <- target_crs
         # movecost 2.x is built on raster/sp, so hand it a RasterLayer.

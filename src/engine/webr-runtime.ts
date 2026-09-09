@@ -162,7 +162,7 @@ export class MovecostEngine implements AnalysisBackend {
     await ensureDir(webR, dir);
 
     const encoder = new TextEncoder();
-    const dtmPath = inputs.dtm ? `${dir}/dtm.tif` : null;
+    const dtmPath = inputs.dtm && !inputs.dtmHandle ? `${dir}/dtm.tif` : null;
     const studyplotPath = inputs.studyplot ? `${dir}/studyplot.geojson` : null;
     const originPath = `${dir}/origin.geojson`;
     const destinPath = inputs.destin ? `${dir}/destin.geojson` : null;
@@ -182,6 +182,7 @@ export class MovecostEngine implements AnalysisBackend {
     const fullRequest: EngineRequest = {
       ...request,
       dtmPath,
+      dtmHandle: inputs.dtmHandle ?? null,
       studyplotPath,
       originPath,
       destinPath,
@@ -226,7 +227,10 @@ export class MovecostEngine implements AnalysisBackend {
     const encoder = new TextEncoder();
     const gridPath = `${dir}/grid.bin`;
     const areaPath = areaGeoJson ? `${dir}/area.geojson` : null;
-    const outPath = `${dir}/dem.tif`;
+    // The projected DTM stays in R memory under this handle. writeRaster() never
+    // returns under webR for anything above a couple of thousand cells, and the
+    // analyses do not need a file — they take the handle.
+    const handle = `dem-${this.requestCounter}`;
     const requestPath = `${dir}/grid.json`;
     const responsePath = `${dir}/grid.response.json`;
 
@@ -239,7 +243,7 @@ export class MovecostEngine implements AnalysisBackend {
     await webR.FS.writeFile(
       requestPath,
       encoder.encode(JSON.stringify({
-        gridPath, areaPath, outPath,
+        gridPath, areaPath, keepAs: handle,
         width: grid.width, height: grid.height, crs: grid.crs, zoom: grid.zoom,
         xmin: grid.xmin, ymin: grid.ymin, xmax: grid.xmax, ymax: grid.ymax,
       })),
@@ -254,26 +258,25 @@ export class MovecostEngine implements AnalysisBackend {
       this.emit("error", raw.error ?? "The grid could not be projected.", 1);
       throw new Error(raw.error ?? "The grid could not be projected.");
     }
-    const bytes = await webR.FS.readFile(outPath);
     await cleanupDir(webR, dir);
     const summary = parseDemSummary(raw);
     this.emit("done", `Built a ${summary.width} x ${summary.height} DTM.`, 1);
-    return { bytes: new Uint8Array(bytes), summary };
+    return { bytes: new Uint8Array(0), handle, summary };
   }
 
   /** Same preview the HTTP backend serves, computed in the page instead. */
-  async previewDtm(dtm: Uint8Array): Promise<DtmPreview> {
+  async previewDtm(dtm: Uint8Array, handle?: string | null): Promise<DtmPreview> {
     const webR = await this.boot();
     const dir = `${WORK_DIR}/preview-${++this.requestCounter}`;
     await ensureDir(webR, dir);
-    const dtmPath = `${dir}/dtm.tif`;
+    const dtmPath = handle ? null : `${dir}/dtm.tif`;
     const requestPath = `${dir}/preview.json`;
     const responsePath = `${dir}/preview.response.json`;
 
-    await webR.FS.writeFile(dtmPath, dtm);
+    if (dtmPath) await webR.FS.writeFile(dtmPath, dtm);
     await webR.FS.writeFile(
       requestPath,
-      new TextEncoder().encode(JSON.stringify({ dtmPath })),
+      new TextEncoder().encode(JSON.stringify({ dtmPath, dtmHandle: handle ?? null })),
     );
     await webR.evalRVoid(`mcx_preview_dtm(${rString(requestPath)})`);
     const raw = await webR.FS.readFile(responsePath);
