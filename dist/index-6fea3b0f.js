@@ -4494,10 +4494,10 @@ const ORIGIN_STYLE = {
   labels: {
     enabled: true,
     field: "mcx_id",
-    size: 12,
+    size: 13,
     color: "#14532d",
     haloColor: "#ffffff",
-    haloWidth: 1.5,
+    haloWidth: 2.5,
     anchor: "top",
     offsetY: 0.9,
     allowOverlap: true
@@ -4516,10 +4516,10 @@ const DESTINATION_STYLE = {
   labels: {
     enabled: true,
     field: "mcx_id",
-    size: 12,
+    size: 13,
     color: "#7f1d1d",
     haloColor: "#ffffff",
-    haloWidth: 1.5,
+    haloWidth: 2.5,
     anchor: "top",
     offsetY: 1.1,
     allowOverlap: true
@@ -4545,7 +4545,7 @@ const KIND_STYLES = {
 function resultStyle(key, kind) {
   return RESULT_STYLES[key] ?? KIND_STYLES[kind] ?? {};
 }
-const PLUGIN_VERSION = "0.1.5";
+const PLUGIN_VERSION = "0.1.6";
 const ANALYSES = [
   {
     id: "paths",
@@ -4828,7 +4828,8 @@ const DEM_ZOOMS = [
 const ORIGIN_LAYER_ID = "movecost-origin";
 const DESTINATION_LAYER_ID = "movecost-destination";
 const TERRAIN_LAYER_ID = "movecost-terrain";
-const INPUT_GROUP_NAME = "movecost · input";
+const TERRAIN_GROUP_NAME = "movecost · terrain";
+const LOCATIONS_GROUP_NAME = "movecost · locations";
 const DEFAULT_PARAMS = {
   funct: "t",
   time: "h",
@@ -4907,8 +4908,9 @@ class MovecostPanel {
     origin: null,
     destination: null
   };
-  /** Layers-panel group holding the terrain and the markers. */
-  inputGroupId = null;
+  /** Layers-panel groups: the DEM at the bottom, the markers on top of everything. */
+  terrainGroupId = null;
+  locationsGroupId = null;
   runCount = 0;
   rampId = "viridis";
   rasterOpacity = 0.75;
@@ -4936,7 +4938,7 @@ class MovecostPanel {
   plannedGrid() {
     if (!this.area) return null;
     const budget = this.cellBudget();
-    const requested = Math.min(15, this.demZoom + 1);
+    const requested = Math.min(15, this.demZoom);
     const wanted = estimateGrid(this.area.features, requested);
     const fits = zoomWithinBudget(this.area.features, requested, budget.cells);
     if (!wanted || !fits) return null;
@@ -5188,6 +5190,26 @@ class MovecostPanel {
       );
     }
     children.push(actions);
+    const layers = this.candidateLayers();
+    if (layers.length && this.app.getLayerFeatures) {
+      const options = [{ value: "", label: "From an existing polygon layer…" }].concat(
+        layers.map((layer) => ({ value: layer.id, label: layer.name ?? layer.id }))
+      );
+      children.push(
+        select(options, "", (layerId) => {
+          if (!layerId) return;
+          const layer = layers.find((l2) => l2.id === layerId);
+          const polygons = keepPolygons(readLayer(this.app, layerId));
+          if (!polygons.length) {
+            this.message = { text: "That layer has no polygon features.", tone: "warn" };
+          } else {
+            this.area = { features: polygons, label: `layer "${layer?.name ?? layerId}"` };
+            this.message = null;
+          }
+          this.render();
+        })
+      );
+    }
     children.push(
       el("p", {
         class: this.area ? "mcx-summary" : "mcx-summary mcx-summary--empty",
@@ -5218,7 +5240,7 @@ class MovecostPanel {
       } else if (plan.reduced) {
         children.push(
           note(
-            `${cellsText(wanted)} would not fit ${budget.where} (limit ${budget.cells.toLocaleString()} cells). The download will use level ${fits.zoom - 1} instead: ${cellsText(fits)}. Draw a smaller area for finer detail.`,
+            `${cellsText(wanted)} would not fit ${budget.where} (limit ${budget.cells.toLocaleString()} cells). The download will use level ${fits.zoom} instead: ${cellsText(fits)}. Draw a smaller area for finer detail.`,
             "warn"
           )
         );
@@ -5289,7 +5311,7 @@ class MovecostPanel {
         () => {
           this.terrainVisible = !this.terrainVisible;
           this.terrainOverlay?.setVisible(this.terrainVisible);
-          if (this.terrainVisible) this.groupInputs();
+          if (this.terrainVisible) this.groupTerrain();
           this.render();
         },
         "ghost"
@@ -5341,8 +5363,8 @@ class MovecostPanel {
             `The area is too large for ${plan.budget.where}: even at the coarsest level it needs ${plan.fits.cells.toLocaleString()} cells (limit ${plan.budget.cells.toLocaleString()}). Draw a smaller area.`
           );
         }
-        const tileZoom = plan?.fits.zoom ?? Math.min(15, this.demZoom + 1);
-        const reducedTo = plan?.reduced ? tileZoom - 1 : null;
+        const tileZoom = plan?.fits.zoom ?? Math.min(15, this.demZoom);
+        const reducedTo = plan?.reduced ? tileZoom : null;
         const grid = await fetchTerrariumGrid(this.area.features, tileZoom, (done, total) => {
           this.progress = {
             phase: "running",
@@ -5894,9 +5916,8 @@ class MovecostPanel {
         opacity: 0.85
       });
       this.terrainVisible = true;
-      this.refreshMarkers("origin", true);
-      this.refreshMarkers("destination", true);
-      this.groupInputs();
+      this.groupTerrain();
+      this.raiseMarkers();
       const b2 = preview.raster.bounds;
       this.app.fitBounds?.([b2.west, b2.south, b2.east, b2.north]);
     } catch (error) {
@@ -6001,7 +6022,26 @@ class MovecostPanel {
       features,
       style: which === "origin" ? ORIGIN_STYLE : DESTINATION_STYLE
     });
-    this.groupInputs();
+    this.groupLocations();
+  }
+  /**
+   * Re-adds both marker layers so they sit above whatever was just added —
+   * the terrain, or a run's cost rasters, which would otherwise bury them.
+   * The Layers panel keeps a group's layers together, so the markers get a
+   * fresh group each time rather than being moved into the old one.
+   */
+  raiseMarkers() {
+    if (!this.markers.origin && !this.markers.destination) return;
+    const oldGroup = this.locationsGroupId;
+    this.locationsGroupId = null;
+    this.refreshMarkers("origin", true);
+    this.refreshMarkers("destination", true);
+    if (oldGroup && oldGroup !== this.locationsGroupId) {
+      try {
+        this.app.removeLayerGroup?.(oldGroup);
+      } catch {
+      }
+    }
   }
   clearMarkers() {
     for (const which of ["origin", "destination"]) {
@@ -6011,10 +6051,18 @@ class MovecostPanel {
       this.rawMarkerCleanup[which] = null;
     }
   }
-  /** Terrain and markers share one Layers-panel group. */
-  groupInputs() {
-    const ids = [this.terrainOverlay, this.markers.origin, this.markers.destination].filter((h2) => Boolean(h2)).map((h2) => h2.id);
-    this.inputGroupId = groupHostLayers(this.app, INPUT_GROUP_NAME, ids, this.inputGroupId);
+  groupTerrain() {
+    if (!this.terrainOverlay) return;
+    this.terrainGroupId = groupHostLayers(
+      this.app,
+      TERRAIN_GROUP_NAME,
+      [this.terrainOverlay.id],
+      this.terrainGroupId
+    );
+  }
+  groupLocations() {
+    const ids = [this.markers.origin, this.markers.destination].filter((h2) => Boolean(h2)).map((h2) => h2.id);
+    this.locationsGroupId = groupHostLayers(this.app, LOCATIONS_GROUP_NAME, ids, this.locationsGroupId);
   }
   /**
    * Layers offered as point / barrier sources: everything the host lists except
@@ -6146,6 +6194,7 @@ class MovecostPanel {
       }
     }
     groupHostLayers(this.app, `movecost · ${spec.label} #${this.runCount}`, layerIds, null);
+    this.raiseMarkers();
     if (bounds) this.app.fitBounds?.(bounds);
   }
   /**
