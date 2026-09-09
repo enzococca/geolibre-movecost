@@ -2119,7 +2119,7 @@ function dr(r13) {
       return typeof SharedArrayBuffer < "u" ? new we(r13) : new xe(r13);
   }
 }
-var hr = h ? __dirname + "/" : "https://webr.r-wasm.org/v0.6.0/", yr = "https://repo.r-wasm.org", bt = "0.6.0", wt = "4.6.0";
+var hr = h ? "/" : "https://webr.r-wasm.org/v0.6.0/", yr = "https://repo.r-wasm.org", bt = "0.6.0", wt = "4.6.0";
 function m(r13) {
   return !!r13 && (typeof r13 == "object" || typeof r13 == "function") && "payloadType" in r13 && Fe(r13._payload);
 }
@@ -3256,9 +3256,11 @@ mcx_run <- function(request_path, response_path = NULL) {
 const WEBR_VERSION = "0.6.0";
 const WEBR_BASE_URL = readOverride$1("MOVECOST_WEBR_BASE_URL") ?? `https://cdn.jsdelivr.net/npm/webr@${WEBR_VERSION}/dist/`;
 const UPSTREAM_WASM_REPO = "https://repo.r-wasm.org";
+const PUBLISHED_WASM_REPO = "https://enzococca.github.io/geolibre-movecost/wasm-repo";
 const WASM_CRAN_REPOS = (() => {
   const override = readOverride$1("MOVECOST_WASM_REPO");
-  return override ? [override, UPSTREAM_WASM_REPO] : [UPSTREAM_WASM_REPO];
+  const repos = [PUBLISHED_WASM_REPO, UPSTREAM_WASM_REPO];
+  return override ? [override, ...repos] : repos;
 })();
 const R_PACKAGES = [
   "jsonlite",
@@ -6058,7 +6060,7 @@ class MovecostPanel {
 }
 const PLUGIN_ID = "movecost";
 const PANEL_ID = "movecost-panel";
-const VERSION = "0.1.1";
+const VERSION = "0.1.2";
 class MovecostControl {
   constructor(onToggle) {
     this.onToggle = onToggle;
