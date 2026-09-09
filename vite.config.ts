@@ -39,5 +39,10 @@ export default defineConfig({
   },
   define: {
     "process.env.NODE_ENV": JSON.stringify("production"),
+    // webR's browser build still carries one Node-only branch that reads
+    // `__dirname` (its base URL when running under Node). Never taken in a
+    // browser, but the plugin registry's validator imports the bundle under
+    // Node, where a bare `__dirname` in an ES module is a ReferenceError.
+    __dirname: JSON.stringify(""),
   },
 });
