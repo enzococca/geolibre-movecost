@@ -9,7 +9,8 @@
   "scripts": {
     "build": "vite build",
     "typecheck": "tsc --noEmit",
-    "package": "npm run build && node scripts/package-plugin.mjs",
+    "package": "npm run build && node scripts/package-plugin.mjs && npm run verify:zip",
+    "verify:zip": "python3 scripts/check-plugin-zip.py",
     "install:geolibre": "npm run build && node scripts/install-plugin.mjs",
     "serve:demo": "vite --config vite.demo.config.ts",
     "test:engine": "Rscript scripts/test-engine.R"

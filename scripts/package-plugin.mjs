@@ -29,6 +29,22 @@ async function main() {
   const manifestPath = join(root, "geolibre-plugin", "plugin.json");
   const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
 
+  // The host ignores unknown manifest keys, but an older build need not, and a
+  // rejected install says nothing about which key caused it. So the packaged
+  // manifest carries only the documented fields; catalogue metadata such as
+  // author, homepage and minGeoLibreVersion belongs in the registry entry
+  // (plugin-registry-entry.json), not here.
+  const ALLOWED = new Set([
+    "id", "name", "version", "entry", "style", "description", "engines",
+  ]);
+  const unexpected = Object.keys(manifest).filter((key) => !ALLOWED.has(key));
+  if (unexpected.length) {
+    throw new Error(
+      `geolibre-plugin/plugin.json has non-manifest keys: ${unexpected.join(", ")}. ` +
+        `Move them to plugin-registry-entry.json.`,
+    );
+  }
+
   for (const required of ["dist/index.js", "dist/style.css"]) {
     if (!existsSync(join(root, required))) {
       throw new Error(`Missing ${required}. Run "npm run build" first.`);
@@ -53,7 +69,13 @@ async function main() {
   await rm(zipPath, { force: true });
 
   try {
-    await execFileAsync("zip", ["-r", "-q", zipPath, "plugin.json", "dist"], { cwd: staging });
+    // -D omits directory entries and -X drops platform extra fields: the
+    // archive then carries nothing but the three files the host asks for,
+    // which is the safest thing to hand to an unfamiliar unzip implementation
+    // (the mobile build's, for one).
+    await execFileAsync("zip", ["-r", "-q", "-D", "-X", zipPath, "plugin.json", "dist"], {
+      cwd: staging,
+    });
   } catch {
     await writeStoredZip(zipPath, [
       ["plugin.json", await readFile(join(staging, "plugin.json"))],

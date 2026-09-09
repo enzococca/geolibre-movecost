@@ -49,10 +49,23 @@ Details, ports and troubleshooting: [r-backend/README.md](r-backend/README.md).
 
 ```bash
 npm install
-npm run package          # -> build/movecost-0.1.0.zip
+npm run package          # -> build/movecost-0.1.0.zip, then checks it
 ```
 
-Open GeoLibre → *Manage Plugins* → install from the zip.
+Open GeoLibre → *Manage Plugins* → install from the zip. Works on desktop and
+mobile; extra plugin folders are desktop-only.
+
+`npm run package` runs `scripts/check-plugin-zip.py` on the result, which applies
+GeoLibre's own install-time rules — where the manifest may sit, which fields are
+required, how `entry` and `style` resolve, the 50 MB cap — and reports every
+reason the host would refuse the archive rather than stopping at the first. Run
+it on its own with `npm run verify:zip`.
+
+The packaged `plugin.json` deliberately carries **only** the documented manifest
+fields. Catalogue metadata (author, homepage, categories, `minGeoLibreVersion`)
+lives in `plugin-registry-entry.json`: the current host ignores unknown manifest
+keys, but an older build need not, and a refused install does not say which key
+caused it. The packaging script fails if the two ever drift.
 
 **Straight into a local GeoLibre Desktop**
 
