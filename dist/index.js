@@ -3318,7 +3318,13 @@ function readOverride(key) {
     return null;
   }
 }
+function isMobileDevice() {
+  const ua = navigator.userAgent;
+  if (/Android|iPhone|iPad/i.test(ua)) return true;
+  return /Mac/.test(ua) && navigator.maxTouchPoints > 1;
+}
 async function probeBackend(url = DEFAULT_BACKEND_URL, timeoutMs = 1500) {
+  if (isMobileDevice()) return null;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -4576,7 +4582,7 @@ class MovecostPanel {
     this.backendProbe = (async () => {
       const health = await probeBackend(DEFAULT_BACKEND_URL);
       const backend = health ? new HttpBackend(DEFAULT_BACKEND_URL, health.versions ?? null) : new MovecostEngine(this.webrBaseUrl(), this.pluginRepos());
-      this.backendNote = health ? null : `No local R service on ${DEFAULT_BACKEND_URL}, so R runs in the page. That works, but it is roughly a hundred times slower and cannot download elevation — load a GeoTIFF. The first run fetches about 65 MB. For real work, start the R service (r-backend/README.md) and press Recheck.`;
+      this.backendNote = health ? null : isMobileDevice() ? `R runs in the page on this device. The first run downloads about 65 MB and takes a few minutes; after that, a small study area answers in seconds. Keep the area modest.` : `No local R service on ${DEFAULT_BACKEND_URL}, so R runs in the page. That works, but it is roughly a hundred times slower. The first run fetches about 65 MB. For real work, start the R service (r-backend/README.md) and press Recheck.`;
       this.disposeProgress = backend.onProgress((event) => {
         this.progress = event.phase === "done" || event.phase === "error" ? null : event;
         this.renderStatus();
