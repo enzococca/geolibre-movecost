@@ -205,6 +205,35 @@ pass(isFALSE(crosses_wall(net, "network")), "network paths respect the barrier")
 rnk <- run("rank", base(lcpN = 3), paths$origin, paths$destin1, paths$barrier)
 pass(isFALSE(crosses_wall(rnk, "rankedPaths")), "ranked paths respect the barrier")
 
+# --- 2b. barriers as a host actually hands them over --------------------------
+cat("\n== awkward barrier layers\n")
+# A host's "sketches" layer holds every drawing: the rectangle that defined the
+# study area next to the line meant as a wall, with list-valued properties.
+# terra cannot make one SpatVector out of mixed geometry types, so this used to
+# fail with "[as,sf] coercion failed".
+sketches <- st_sf(
+  gm_shape = c("rectangle", "line"),
+  gm_centre = I(list(c(1, 2), c(3, 4))),
+  geometry = st_sfc(
+    st_polygon(list(rbind(c(x0 + 3000, y0 + 3000), c(x0 + 3900, y0 + 3000),
+                          c(x0 + 3900, y0 + 3900), c(x0 + 3000, y0 + 3900),
+                          c(x0 + 3000, y0 + 3000)))),
+    st_linestring(rbind(c(x0 - 100, y0 + 2025), c(x0 + 3400, y0 + 2025))),
+    crs = 32633
+  )
+)
+mixed <- write_v(sketches, "sketches.geojson")
+check_result(run("paths", base(), paths$origin, paths$destin, mixed),
+             "mixed line + polygon barrier", c("lcps", "isolines"))
+# Z coordinates and empty geometries are the other two things a drawing layer
+# arrives with.
+zm <- st_sf(id = 1:2, geometry = st_sfc(
+  st_linestring(cbind(c(x0 - 100, x0 + 3400), c(y0 + 2025, y0 + 2025), c(10, 20))),
+  st_linestring(cbind(c(x0 + 100, x0 + 200), c(y0 + 2025, y0 + 2025), c(10, 20))),
+  crs = 32633))
+check_result(run("paths", base(), paths$origin, paths$destin, write_v(zm, "zm.geojson")),
+             "barrier with Z coordinates", "lcps")
+
 # --- 3. every cost function ---------------------------------------------------
 cat("\n== all 26 cost functions (paths)\n")
 functs <- movecost::mc_cost_functions()

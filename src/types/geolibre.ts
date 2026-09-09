@@ -43,6 +43,8 @@ export interface GeoLibreLayerSummary {
   id: string;
   name?: string;
   type?: string;
+  /** Set by hosts that report a layer's group; absent on those that do not. */
+  groupId?: string | null;
 }
 
 export interface RightPanelRegistration {

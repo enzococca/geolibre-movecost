@@ -199,6 +199,18 @@ export class MovecostPanel {
   /** Layers-panel groups: the DEM at the bottom, the markers on top of everything. */
   private terrainGroupId: string | null = null;
   private locationsGroupId: string | null = null;
+  /**
+   * Locations groups this panel made and could not remove afterwards.
+   *
+   * Raising the markers means a fresh group (the host anchors a group where
+   * its first member sits), and the old one should go. Not every host build
+   * honours `removeLayerGroup`, and one that does not leaves an empty group in
+   * the Layers panel on every single run — twenty of them by the end of a
+   * session. After a couple of failures the panel stops making new ones and
+   * reuses the group it has, which costs a little stacking order and keeps the
+   * host's Layers panel readable.
+   */
+  private orphanedGroups: string[] = [];
   private runCount = 0;
 
   private rampId = "viridis";
@@ -967,6 +979,26 @@ export class MovecostPanel {
     return el("div", { class: "mcx-picker" }, ...children);
   }
 
+  /**
+   * Drawn features offered as barriers, minus the one already serving as the
+   * study area.
+   *
+   * The rectangle a user drags to say "download the DEM for here" is a drawing
+   * like any other, so taking every drawing as a barrier turns the whole study
+   * area into an obstacle — the analysis then either fails or returns nothing
+   * reachable, and the reason is invisible.
+   */
+  private drawingsAsBarriers(): GeoJsonFeature[] {
+    const key = (f: GeoJsonFeature): string =>
+      String(
+        f.id ??
+          (f.properties as Record<string, unknown> | undefined)?.__gm_id ??
+          JSON.stringify(f.geometry),
+      );
+    const used = new Set((this.area?.features ?? []).map(key));
+    return keepLinesAndPolygons(readDrawings(this.app)).filter((f) => !used.has(key(f)));
+  }
+
   private renderBarrierPicker(): HTMLElement {
     const layers = this.candidateLayers();
     const children: HTMLElement[] = [
@@ -981,7 +1013,7 @@ export class MovecostPanel {
     if (this.app.getDrawnFeatures) {
       actions.append(
         button("Use drawings", () => {
-          const features = keepLinesAndPolygons(readDrawings(this.app));
+          const features = this.drawingsAsBarriers();
           this.barrier = { kind: "drawings", label: "drawn features", features };
           this.render();
         }),
@@ -1526,7 +1558,8 @@ export class MovecostPanel {
   private raiseMarkers(): void {
     if (!this.markers.origin && !this.markers.destination) return;
     const oldGroup = this.locationsGroupId;
-    this.locationsGroupId = null;
+    // Two orphans are enough evidence that this host will not remove them.
+    if (this.orphanedGroups.length < 2) this.locationsGroupId = null;
     // Both layers come off before either goes back: the host anchors a group
     // where its first member sits, so re-adding one marker while the other is
     // still low in the stack would drag the new group down to it.
@@ -1536,12 +1569,24 @@ export class MovecostPanel {
     }
     this.refreshMarkers("origin");
     this.refreshMarkers("destination");
-    if (oldGroup && oldGroup !== this.locationsGroupId) {
-      try {
-        this.app.removeLayerGroup?.(oldGroup);
-      } catch {
-        /* cosmetic */
-      }
+    if (oldGroup && oldGroup !== this.locationsGroupId) this.orphanedGroups.push(oldGroup);
+    this.orphanedGroups = this.orphanedGroups.filter((id) => !this.removeGroup(id));
+  }
+
+  /** True when the host actually removed the group. */
+  private removeGroup(id: string): boolean {
+    if (typeof this.app.removeLayerGroup !== "function") return false;
+    try {
+      this.app.removeLayerGroup(id);
+    } catch {
+      return false;
+    }
+    // The host offers no way to ask whether a group still exists, so treat a
+    // layer still claiming it as proof that it does.
+    try {
+      return !this.app.listLayers?.().some((l) => l.groupId === id);
+    } catch {
+      return true;
     }
   }
 
