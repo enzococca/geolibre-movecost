@@ -4132,42 +4132,76 @@ function addRasterOverlay(app, raster, options) {
   const map = app.getMap?.() ?? null;
   if (!map) return null;
   const canvas = renderRasterToCanvas(raster, options);
+  const url = canvas.toDataURL("image/png");
   const id = `movecost-raster-${overlaySeq += 1}`;
   const sourceId = `${id}-source`;
   const { west, south, east, north } = raster.bounds;
-  map.addSource(sourceId, {
-    type: "image",
-    url: canvas.toDataURL("image/png"),
-    coordinates: [
-      [west, north],
-      [east, north],
-      [east, south],
-      [west, south]
-    ]
-  });
-  map.addLayer({
-    id,
-    type: "raster",
-    source: sourceId,
-    paint: { "raster-opacity": options.opacity ?? 0.75, "raster-fade-duration": 0 }
-  });
+  const coordinates = [
+    [west, north],
+    [east, north],
+    [east, south],
+    [west, south]
+  ];
+  let opacity = options.opacity ?? 0.75;
+  let visible = true;
+  let removed = false;
+  let applying = false;
+  const ensure = () => {
+    if (removed || applying) return;
+    applying = true;
+    try {
+      if (!map.getSource(sourceId)) {
+        map.addSource(sourceId, { type: "image", url, coordinates });
+      }
+      if (!map.getLayer(id)) {
+        map.addLayer({
+          id,
+          type: "raster",
+          source: sourceId,
+          layout: { visibility: visible ? "visible" : "none" },
+          paint: { "raster-opacity": opacity, "raster-fade-duration": 0 }
+        });
+      } else {
+        const wantVisibility = visible ? "visible" : "none";
+        if (map.getLayoutProperty?.(id, "visibility") !== wantVisibility) {
+          map.setLayoutProperty?.(id, "visibility", wantVisibility);
+        }
+        if (map.getPaintProperty?.(id, "raster-opacity") !== opacity) {
+          map.setPaintProperty?.(id, "raster-opacity", opacity);
+        }
+      }
+      const order = map.getLayersOrder?.();
+      if (order && order[order.length - 1] !== id) map.moveLayer?.(id);
+    } catch {
+    } finally {
+      applying = false;
+    }
+  };
+  const watcher = () => ensure();
+  ensure();
+  map.on("styledata", watcher);
+  map.on("style.load", watcher);
+  const stopWatching = () => {
+    map.off("styledata", watcher);
+    map.off("style.load", watcher);
+  };
   return {
     id,
     sourceId,
     layerId: id,
     bounds: [west, south, east, north],
-    remove: () => removeOverlay(map, id, sourceId),
-    setVisible: (visible) => {
-      try {
-        map.setLayoutProperty(id, "visibility", visible ? "visible" : "none");
-      } catch {
-      }
+    remove: () => {
+      removed = true;
+      stopWatching();
+      removeOverlay(map, id, sourceId);
     },
-    setOpacity: (opacity) => {
-      try {
-        map.setPaintProperty(id, "raster-opacity", opacity);
-      } catch {
-      }
+    setVisible: (next) => {
+      visible = next;
+      ensure();
+    },
+    setOpacity: (next) => {
+      opacity = next;
+      ensure();
     }
   };
 }
@@ -4180,6 +4214,19 @@ function removeOverlay(map, layerId, sourceId) {
     if (map.getSource(sourceId)) map.removeSource(sourceId);
   } catch {
   }
+}
+function renderRasterThumbnail(raster, options = {}, maxWidth = 160) {
+  const full = renderRasterToCanvas(raster, { ...options, opacity: 1 });
+  const scale = Math.min(1, maxWidth / full.width);
+  const thumb = document.createElement("canvas");
+  thumb.width = Math.max(1, Math.round(full.width * scale));
+  thumb.height = Math.max(1, Math.round(full.height * scale));
+  const ctx = thumb.getContext("2d");
+  if (ctx) {
+    ctx.imageSmoothingEnabled = scale < 1;
+    ctx.drawImage(full, 0, 0, thumb.width, thumb.height);
+  }
+  return thumb;
 }
 function renderLegend(ramp, reverse = false) {
   const canvas = document.createElement("canvas");
@@ -4194,6 +4241,229 @@ function renderLegend(ramp, reverse = false) {
     ctx.fillRect(x2, 0, 1, canvas.height);
   }
   return canvas;
+}
+function hostOwnsLayers(app) {
+  return typeof app.registerExternalNativeLayer === "function";
+}
+let layerSeq = 0;
+function uniqueLayerId(prefix) {
+  layerSeq += 1;
+  return `movecost-${prefix}-${Date.now().toString(36)}-${layerSeq}`;
+}
+function removeHostLayer(app, id) {
+  try {
+    if (app.unregisterExternalNativeLayer) app.unregisterExternalNativeLayer(id);
+    else app.removeLayer?.(id);
+  } catch {
+  }
+}
+function addHostVectorLayer(app, options) {
+  const id = options.id ?? uniqueLayerId("vector");
+  const collection = {
+    type: "FeatureCollection",
+    features: options.features
+  };
+  const bounds = boundsOf(options.features);
+  if (!app.registerExternalNativeLayer) {
+    let hostId = null;
+    try {
+      hostId = app.addGeoJsonLayer(options.name, collection);
+    } catch {
+      return null;
+    }
+    const fallbackId = hostId;
+    return {
+      id: fallbackId,
+      name: options.name,
+      bounds,
+      remove: () => removeHostLayer(app, fallbackId),
+      setVisible: () => {
+      },
+      setOpacity: () => {
+      }
+    };
+  }
+  const registration = {
+    id,
+    name: options.name,
+    type: "geojson",
+    nativeLayerIds: [],
+    geojson: collection,
+    style: options.style,
+    groupId: options.groupId,
+    metadata: { movecost: true }
+  };
+  app.registerExternalNativeLayer(registration);
+  return {
+    id,
+    name: options.name,
+    bounds,
+    remove: () => removeHostLayer(app, id),
+    // The registration API has no visibility flag, so hiding is removing and
+    // showing is registering again; the user's Layers-panel eye icon is the
+    // better control and this is only used to clear transient markers.
+    setVisible: (visible) => {
+      if (visible) app.registerExternalNativeLayer?.(registration);
+      else removeHostLayer(app, id);
+    },
+    setOpacity: (opacity) => {
+      app.registerExternalNativeLayer?.({ ...registration, opacity });
+    }
+  };
+}
+function addHostRasterLayer(app, raster, options) {
+  const { west, south, east, north } = raster.bounds;
+  const bounds = [west, south, east, north];
+  const opacity = options.opacity ?? 0.75;
+  if (!app.registerExternalNativeLayer) {
+    const overlay = addRasterOverlay(app, raster, options);
+    if (!overlay) return null;
+    return {
+      id: overlay.id,
+      name: options.name,
+      bounds,
+      remove: overlay.remove,
+      setVisible: overlay.setVisible,
+      setOpacity: overlay.setOpacity
+    };
+  }
+  const canvas = renderRasterToCanvas(raster, { ...options, opacity: 1 });
+  const url = canvas.toDataURL("image/png");
+  const id = options.id ?? uniqueLayerId("raster");
+  const registration = {
+    id,
+    name: options.name,
+    type: "image",
+    nativeLayerIds: [],
+    source: {
+      type: "image",
+      url,
+      coordinates: [
+        [west, north],
+        [east, north],
+        [east, south],
+        [west, south]
+      ]
+    },
+    opacity,
+    groupId: options.groupId,
+    metadata: { movecost: true, movecostRange: [raster.min, raster.max] }
+  };
+  app.registerExternalNativeLayer(registration);
+  return {
+    id,
+    name: options.name,
+    bounds,
+    remove: () => removeHostLayer(app, id),
+    setVisible: (visible) => {
+      if (visible) app.registerExternalNativeLayer?.(registration);
+      else removeHostLayer(app, id);
+    },
+    setOpacity: (value) => {
+      app.registerExternalNativeLayer?.({ ...registration, opacity: value });
+    }
+  };
+}
+function groupHostLayers(app, name, layerIds, existingGroupId) {
+  if (!layerIds.length) return existingGroupId;
+  try {
+    if (existingGroupId && app.moveLayersToGroup) {
+      app.moveLayersToGroup(layerIds, existingGroupId);
+      return existingGroupId;
+    }
+    if (app.addLayerGroup) return app.addLayerGroup(name, layerIds) ?? null;
+  } catch {
+  }
+  return existingGroupId;
+}
+function addRawMarkerLayer(map, id, features, colour) {
+  const sourceId = `${id}-source`;
+  const data = { type: "FeatureCollection", features };
+  const source = map.getSource(sourceId);
+  if (source?.setData) {
+    source.setData(data);
+  } else {
+    map.addSource(sourceId, { type: "geojson", data });
+    map.addLayer({
+      id,
+      type: "circle",
+      source: sourceId,
+      paint: {
+        "circle-radius": 7,
+        "circle-color": colour,
+        "circle-stroke-color": "#ffffff",
+        "circle-stroke-width": 2
+      }
+    });
+  }
+  return () => {
+    try {
+      if (map.getLayer(id)) map.removeLayer(id);
+      if (map.getSource(sourceId)) map.removeSource(sourceId);
+    } catch {
+    }
+  };
+}
+const ORIGIN_STYLE = {
+  fillColor: "#16a34a",
+  fillOpacity: 1,
+  strokeColor: "#ffffff",
+  strokeWidth: 2,
+  circleRadius: 8,
+  markerEnabled: false,
+  labels: {
+    enabled: true,
+    field: "mcx_id",
+    size: 12,
+    color: "#14532d",
+    haloColor: "#ffffff",
+    haloWidth: 1.5,
+    anchor: "top",
+    offsetY: 0.9,
+    allowOverlap: true
+  }
+};
+const DESTINATION_STYLE = {
+  fillColor: "#dc2626",
+  fillOpacity: 1,
+  strokeColor: "#ffffff",
+  strokeWidth: 2,
+  circleRadius: 8,
+  markerEnabled: true,
+  markerShape: "triangle",
+  markerColor: "#dc2626",
+  markerSize: 22,
+  labels: {
+    enabled: true,
+    field: "mcx_id",
+    size: 12,
+    color: "#7f1d1d",
+    haloColor: "#ffffff",
+    haloWidth: 1.5,
+    anchor: "top",
+    offsetY: 1.1,
+    allowOverlap: true
+  }
+};
+const RESULT_STYLES = {
+  lcps: { strokeColor: "#e11d48", strokeWidth: 3, lineDecoration: "arrow", lineDecorationColor: "#e11d48" },
+  lcpsBack: { strokeColor: "#f97316", strokeWidth: 2, lineDecoration: "arrow", lineDecorationColor: "#f97316" },
+  lcpAtoB: { strokeColor: "#e11d48", strokeWidth: 3, lineDecoration: "arrow", lineDecorationColor: "#e11d48" },
+  lcpBtoA: { strokeColor: "#f97316", strokeWidth: 2, lineDecoration: "arrow", lineDecorationColor: "#f97316" },
+  rankedPaths: { strokeColor: "#7c3aed", strokeWidth: 2.5 },
+  network: { strokeColor: "#7c3aed", strokeWidth: 2.5 },
+  isolines: { strokeColor: "#1d4ed8", strokeWidth: 1.5 },
+  boundaries: { fillColor: "#f59e0b", fillOpacity: 0.25, strokeColor: "#b45309", strokeWidth: 1.5 },
+  destinations: { fillColor: "#dc2626", fillOpacity: 1, strokeColor: "#ffffff", circleRadius: 6 },
+  origins: { fillColor: "#16a34a", fillOpacity: 1, strokeColor: "#ffffff", circleRadius: 6 }
+};
+const KIND_STYLES = {
+  line: { strokeColor: "#e11d48", strokeWidth: 2.5 },
+  polygon: { fillColor: "#f59e0b", fillOpacity: 0.25, strokeColor: "#b45309", strokeWidth: 1.5 },
+  point: { fillColor: "#0f766e", fillOpacity: 1, strokeColor: "#ffffff", circleRadius: 6 }
+};
+function resultStyle(key, kind) {
+  return RESULT_STYLES[key] ?? KIND_STYLES[kind] ?? {};
 }
 const ANALYSES = [
   {
@@ -4474,6 +4744,10 @@ const DEM_ZOOMS = [
   { value: "13", label: "13 — about 19 m/cell" },
   { value: "14", label: "14 — about 10 m/cell (slow over a large area)" }
 ];
+const ORIGIN_LAYER_ID = "movecost-origin";
+const DESTINATION_LAYER_ID = "movecost-destination";
+const TERRAIN_LAYER_ID = "movecost-terrain";
+const INPUT_GROUP_NAME = "movecost · input";
 const DEFAULT_PARAMS = {
   funct: "t",
   time: "h",
@@ -4491,6 +4765,11 @@ const DEFAULT_PARAMS = {
   netwType: "allpairs",
   lcpN: 3
 };
+function formatValue(value) {
+  if (!Number.isFinite(value)) return "—";
+  const abs = Math.abs(value);
+  return abs >= 100 ? value.toFixed(0) : abs >= 10 ? value.toFixed(1) : value.toFixed(2);
+}
 class MovecostPanel {
   constructor(app) {
     this.app = app;
@@ -4530,6 +4809,19 @@ class MovecostPanel {
   barrier = emptyPointSet();
   picking = null;
   stopPicking = null;
+  /** Live marker layers for the chosen origins / destinations. */
+  markers = {
+    origin: null,
+    destination: null
+  };
+  /** Raw-map fallback markers, when the host cannot register layers. */
+  rawMarkerCleanup = {
+    origin: null,
+    destination: null
+  };
+  /** Layers-panel group holding the terrain and the markers. */
+  inputGroupId = null;
+  runCount = 0;
   rampId = "viridis";
   rasterOpacity = 0.75;
   busy = false;
@@ -4603,10 +4895,15 @@ class MovecostPanel {
     this.cancelPicking();
     this.container = null;
   }
+  /**
+   * Deactivation removes what only makes sense while the panel is open — the
+   * click-to-place markers. The terrain and the results are ordinary GeoLibre
+   * layers the user may well want to keep, so they stay; the Layers panel
+   * removes them like any other layer.
+   */
   dispose() {
     this.cancelPicking();
-    this.clearTerrainOverlay();
-    this.clearProduced();
+    this.clearMarkers();
     this.disposeProgress?.();
     void this.backend?.close();
   }
@@ -4846,6 +5143,7 @@ class MovecostPanel {
         () => {
           this.terrainVisible = !this.terrainVisible;
           this.terrainOverlay?.setVisible(this.terrainVisible);
+          if (this.terrainVisible) this.groupInputs();
           this.render();
         },
         "ghost"
@@ -4937,6 +5235,20 @@ class MovecostPanel {
           (value) => {
             this.analysis = value;
             this.extras = {};
+            const next = getAnalysis(this.analysis);
+            if (next.origin.max && this.origin.features.length > next.origin.max) {
+              this.origin = { ...this.origin, features: this.origin.features.slice(0, next.origin.max) };
+            }
+            if (!next.destination) {
+              this.destination = emptyPointSet();
+            } else if (next.destination.max && this.destination.features.length > next.destination.max) {
+              this.destination = {
+                ...this.destination,
+                features: this.destination.features.slice(0, next.destination.max)
+              };
+            }
+            this.refreshMarkers("origin");
+            this.refreshMarkers("destination");
             this.render();
           }
         )
@@ -4969,7 +5281,7 @@ class MovecostPanel {
   renderPointPicker(which, label, min, max) {
     const set = which === "origin" ? this.origin : this.destination;
     const canPick = Boolean(this.app.getMap?.());
-    const layers = listVectorLayers(this.app);
+    const layers = this.candidateLayers();
     const actions = el("div", { class: "mcx-actions" });
     if (canPick) {
       const active = this.picking === which;
@@ -5030,7 +5342,7 @@ class MovecostPanel {
     return el("div", { class: "mcx-picker" }, ...children);
   }
   renderBarrierPicker() {
-    const layers = listVectorLayers(this.app);
+    const layers = this.candidateLayers();
     const children = [
       el("h4", { class: "mcx-subtitle", text: "Barriers (optional)" }),
       el("p", {
@@ -5275,6 +5587,11 @@ class MovecostPanel {
           slider.addEventListener("input", () => {
             this.rasterOpacity = Number(slider.value);
           });
+          slider.addEventListener("change", () => {
+            for (const layer of this.produced) {
+              if (layer.kind === "raster") layer.handle?.setOpacity(this.rasterOpacity);
+            }
+          });
           return slider;
         })(),
         { inline: true }
@@ -5322,14 +5639,28 @@ class MovecostPanel {
     if (this.produced.length) {
       const list = el("ul", { class: "mcx-layer-list" });
       for (const layer of this.produced) {
-        list.append(el("li", { class: "mcx-layer-list__item", text: layer.label }));
+        const item = el("li", { class: "mcx-layer-list__item" }, el("span", { text: layer.label }));
+        if (layer.preview) {
+          item.append(
+            el(
+              "div",
+              { class: layer.handle ? "mcx-thumb" : "mcx-thumb mcx-thumb--only" },
+              layer.preview.canvas,
+              el("span", {
+                class: "mcx-thumb__range",
+                text: `${formatValue(layer.preview.min)} – ${formatValue(layer.preview.max)}${layer.handle ? "" : " (not drawn on the map)"}`
+              })
+            )
+          );
+        }
+        list.append(item);
       }
       children.push(list);
       children.push(
         el(
           "div",
           { class: "mcx-actions" },
-          button("Remove result layers", () => {
+          button("Remove these result layers", () => {
             this.clearProduced();
             this.render();
           }, "ghost"),
@@ -5393,12 +5724,16 @@ class MovecostPanel {
     try {
       const preview = await backend.previewDtm(this.dtm.bytes, this.dtm.handle ?? null);
       this.terrainPreview = preview;
-      this.terrainOverlay = addRasterOverlay(this.app, decodeRaster(preview.raster), {
-        name: "movecost — terrain",
+      this.terrainOverlay = addHostRasterLayer(this.app, decodeRaster(preview.raster), {
+        id: TERRAIN_LAYER_ID,
+        name: `DEM — ${this.dtm.name}`,
         ramp: "terrain",
         opacity: 0.85
       });
       this.terrainVisible = true;
+      this.refreshMarkers("origin", true);
+      this.refreshMarkers("destination", true);
+      this.groupInputs();
       const b2 = preview.raster.bounds;
       this.app.fitBounds?.([b2.west, b2.south, b2.east, b2.north]);
     } catch (error) {
@@ -5428,6 +5763,7 @@ class MovecostPanel {
       const next = { kind: "click", label: "map clicks", features };
       if (which === "origin") this.origin = next;
       else this.destination = next;
+      this.refreshMarkers(which);
       this.render();
     });
     if (!session) {
@@ -5457,7 +5793,75 @@ class MovecostPanel {
     } else {
       this.message = null;
     }
+    this.refreshMarkers(which);
     this.render();
+  }
+  /**
+   * Keeps the marker layer for one point set in step with the panel state.
+   *
+   * Origins and destinations are separate host layers with distinct styles
+   * (green circles, red triangles — see styles.ts), each labelled with the id
+   * the engine will use, so a click shows up on the map at once and the cost
+   * table can be read back against it. An empty set removes the layer.
+   */
+  refreshMarkers(which, raise = false) {
+    const set = which === "origin" ? this.origin : this.destination;
+    const prefix = which === "origin" ? "O" : "D";
+    const features = set.features.map((feature, index) => ({
+      ...feature,
+      properties: { ...feature.properties ?? {}, mcx_id: `${prefix}${index + 1}`, mcx_role: which }
+    }));
+    if (!hostOwnsLayers(this.app)) {
+      const map = this.app.getMap?.() ?? null;
+      this.rawMarkerCleanup[which]?.();
+      this.rawMarkerCleanup[which] = null;
+      if (map && features.length) {
+        this.rawMarkerCleanup[which] = addRawMarkerLayer(
+          map,
+          which === "origin" ? ORIGIN_LAYER_ID : DESTINATION_LAYER_ID,
+          features,
+          which === "origin" ? "#16a34a" : "#dc2626"
+        );
+      }
+      return;
+    }
+    if (!features.length || raise) {
+      this.markers[which]?.remove();
+      this.markers[which] = null;
+    }
+    if (!features.length) return;
+    const spec = getAnalysis(this.analysis);
+    const label = which === "origin" ? spec.origin.label : spec.destination?.label ?? "Destinations";
+    this.markers[which] = addHostVectorLayer(this.app, {
+      id: which === "origin" ? ORIGIN_LAYER_ID : DESTINATION_LAYER_ID,
+      name: `${label} (${features.length})`,
+      features,
+      style: which === "origin" ? ORIGIN_STYLE : DESTINATION_STYLE
+    });
+    this.groupInputs();
+  }
+  clearMarkers() {
+    for (const which of ["origin", "destination"]) {
+      this.markers[which]?.remove();
+      this.markers[which] = null;
+      this.rawMarkerCleanup[which]?.();
+      this.rawMarkerCleanup[which] = null;
+    }
+  }
+  /** Terrain and markers share one Layers-panel group. */
+  groupInputs() {
+    const ids = [this.terrainOverlay, this.markers.origin, this.markers.destination].filter((h2) => Boolean(h2)).map((h2) => h2.id);
+    this.inputGroupId = groupHostLayers(this.app, INPUT_GROUP_NAME, ids, this.inputGroupId);
+  }
+  /**
+   * Layers offered as point / barrier sources: everything the host lists except
+   * the plugin's own marker layers, which would only feed the panel back its
+   * own state.
+   */
+  candidateLayers() {
+    return listVectorLayers(this.app).filter(
+      (layer) => layer.id !== ORIGIN_LAYER_ID && layer.id !== DESTINATION_LAYER_ID
+    );
   }
   collectParams() {
     const params = { ...this.params };
@@ -5519,7 +5923,7 @@ class MovecostPanel {
           barrier: this.barrier.features.length ? JSON.stringify(toFeatureCollection(this.barrier.features)) : null
         }
       );
-      this.clearProduced();
+      this.produced = [];
       if (response.ok) {
         this.addResultsToMap(response);
         this.message = null;
@@ -5536,70 +5940,97 @@ class MovecostPanel {
       this.render();
     }
   }
+  /**
+   * Puts one run's outputs on the map as host layers in a group of their own.
+   *
+   * Rasters go first so the vectors drawn from them sit on top; the group is
+   * numbered per run so two runs with different cost functions can be
+   * compared side by side rather than overwriting each other.
+   */
   addResultsToMap(response) {
     const spec = getAnalysis(response.analysis);
+    this.runCount += 1;
     const layerIds = [];
     let bounds = null;
+    for (const [key, payload] of Object.entries(response.result.rasters)) {
+      const meta = spec.layers[key];
+      const label = meta?.label ?? key;
+      const { handle, preview } = this.addRaster(payload, label);
+      if (handle) {
+        layerIds.push(handle.id);
+        bounds = unionBounds(bounds, handle.bounds);
+      }
+      if (handle || preview) this.produced.push({ label, kind: "raster", handle, preview });
+    }
     for (const [key, geojson] of Object.entries(response.result.vectors)) {
       const meta = spec.layers[key];
-      const label = `movecost — ${meta?.label ?? key}`;
+      const label = meta?.label ?? key;
       try {
         const collection = JSON.parse(geojson);
-        const layerId = this.app.addGeoJsonLayer(label, {
-          type: "FeatureCollection",
-          features: collection.features ?? []
+        const features = collection.features ?? [];
+        if (!features.length) continue;
+        const handle = addHostVectorLayer(this.app, {
+          name: label,
+          features,
+          style: resultStyle(key, meta?.kind ?? "line")
         });
-        layerIds.push(layerId);
-        bounds = unionBounds(bounds, boundsOf(collection.features ?? []));
-        this.produced.push({
-          label,
-          removeFromMap: () => this.app.removeLayer?.(layerId)
-        });
+        if (!handle) continue;
+        layerIds.push(handle.id);
+        bounds = unionBounds(bounds, boundsOf(features));
+        this.produced.push({ label, kind: "vector", handle });
       } catch (error) {
         this.message = { text: `Could not add "${label}": ${describeError(error)}`, tone: "warn" };
       }
     }
-    for (const [key, payload] of Object.entries(response.result.rasters)) {
-      const meta = spec.layers[key];
-      const label = `movecost — ${meta?.label ?? key}`;
-      const overlay = this.addRaster(payload, label);
-      if (overlay) {
-        bounds = unionBounds(bounds, overlay.bounds);
-        this.produced.push({ label, removeFromMap: overlay.remove });
-      }
-    }
-    if (layerIds.length > 1 && this.app.addLayerGroup) {
-      try {
-        this.app.addLayerGroup(`movecost — ${spec.label}`, layerIds);
-      } catch {
-      }
-    }
+    groupHostLayers(this.app, `movecost · ${spec.label} #${this.runCount}`, layerIds, null);
     if (bounds) this.app.fitBounds?.(bounds);
   }
+  /**
+   * Draws a raster result, degrading in three steps: a host-owned image layer,
+   * a self-healing raw MapLibre overlay (inside `addHostRasterLayer`), and
+   * finally a thumbnail in the panel — which is kept in every case, as a
+   * readout of the value range.
+   */
   addRaster(payload, label) {
+    let decoded;
     try {
-      const decoded = decodeRaster(payload);
-      const overlay = addRasterOverlay(this.app, decoded, {
+      decoded = decodeRaster(payload);
+    } catch (error) {
+      this.message = { text: `Could not decode "${label}": ${describeError(error)}`, tone: "warn" };
+      return { handle: null };
+    }
+    let preview;
+    try {
+      preview = {
+        canvas: renderRasterThumbnail(decoded, { ramp: this.rampId }),
+        min: decoded.min,
+        max: decoded.max
+      };
+    } catch {
+      preview = void 0;
+    }
+    try {
+      const handle = addHostRasterLayer(this.app, decoded, {
         name: label,
         ramp: this.rampId,
         opacity: this.rasterOpacity
       });
-      if (!overlay) {
+      if (!handle) {
         this.message = {
-          text: "This GeoLibre build does not expose the map to plugins, so raster results were not drawn. Vector results are unaffected.",
+          text: "This GeoLibre build exposes neither a layer registry nor the map to plugins, so raster results are shown here in the panel only. Vector results are unaffected.",
           tone: "warn"
         };
       }
-      return overlay;
+      return { handle, preview };
     } catch (error) {
       this.message = { text: `Could not draw "${label}": ${describeError(error)}`, tone: "warn" };
-      return null;
+      return { handle: null, preview };
     }
   }
   clearProduced() {
     for (const layer of this.produced) {
       try {
-        layer.removeFromMap();
+        layer.handle?.remove();
       } catch {
       }
     }
@@ -5765,6 +6196,7 @@ const plugin = {
   }
 };
 export {
+  MovecostPanel,
   plugin as default,
   plugin
 };
