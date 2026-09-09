@@ -2995,7 +2995,21 @@ mcx_grid_to_dtm <- function(request_path, response_path = NULL) {
 
       r <- terra::rast(matrix(values, nrow = height, ncol = width, byrow = TRUE),
                        crs = grid_crs)
+      rm(values)
       terra::ext(r) <- terra::ext(req$xmin, req$xmax, req$ymin, req$ymax)
+
+      # Belt and braces behind the panel's own budget: a grid over \`maxCells\`
+      # is averaged down before projection, so an oversized request degrades
+      # to a coarser DTM instead of exhausting the heap.
+      max_cells <- as.numeric(mcx_pick(req, "maxCells", NA_real_))
+      if (is.finite(max_cells) && max_cells > 0 && expected > max_cells) {
+        fact <- ceiling(sqrt(expected / max_cells))
+        mcx_log("Grid of ", expected, " cells exceeds the ", max_cells,
+                "-cell budget; aggregating by ", fact)
+        r <- terra::aggregate(r, fact = fact, fun = "mean", na.rm = TRUE)
+        width <- terra::ncol(r)
+        height <- terra::nrow(r)
+      }
 
       centre <- sf::st_sfc(sf::st_point(c((req$xmin + req$xmax) / 2,
                                           (req$ymin + req$ymax) / 2)),
@@ -3027,6 +3041,11 @@ mcx_grid_to_dtm <- function(request_path, response_path = NULL) {
       keep_as <- mcx_pick(req, "keepAs", NULL)
       out_path <- mcx_pick(req, "outPath", NULL)
       if (!is.null(keep_as) && nzchar(keep_as)) {
+        # One DTM at a time: inside webR every kept raster stays in the wasm
+        # heap, and a handful of downloads over a session is what turns a
+        # comfortable run into "cannot allocate". The panel only ever refers
+        # to the latest handle.
+        mcx_env$dtms <- list()
         mcx_env$dtms[[keep_as]] <- r
         out_bytes <- 0
         out_path <- NULL
@@ -3060,8 +3079,9 @@ mcx_grid_to_dtm <- function(request_path, response_path = NULL) {
         log = mcx_env$log
       )
     },
-    error = function(e) list(ok = FALSE, error = conditionMessage(e), log = mcx_env$log)
+    error = function(e) list(ok = FALSE, error = mcx_memory_hint(conditionMessage(e)), log = mcx_env$log)
   )
+  invisible(gc(full = TRUE))
 
   jsonlite::write_json(out, response_path, auto_unbox = TRUE, null = "null",
                        na = "null", digits = 8)
@@ -3239,18 +3259,32 @@ mcx_run <- function(request_path, response_path = NULL) {
     error = function(e) {
       list(
         ok = FALSE,
-        error = conditionMessage(e),
+        error = mcx_memory_hint(conditionMessage(e)),
         log = mcx_env$log,
         elapsedSeconds = as.numeric(difftime(Sys.time(), started, units = "secs"))
       )
     }
   )
+  # The transition matrices and cost surfaces are large and out of scope now;
+  # inside webR the heap they held is only reusable once R has collected them.
+  invisible(gc(full = TRUE))
 
   jsonlite::write_json(
     out, response_path,
     auto_unbox = TRUE, null = "null", na = "null", digits = 8
   )
   invisible(response_path)
+}
+
+# R's out-of-memory errors name the size, never the remedy.
+mcx_memory_hint <- function(msg) {
+  if (grepl("cannot allocate|memory exhausted|out of memory|Cannot enlarge memory", msg,
+            ignore.case = TRUE)) {
+    paste0(msg, " (the DTM is too large for the memory available: use a coarser ",
+           "detail level or a smaller area, or 8 movement directions instead of 16)")
+  } else {
+    msg
+  }
 }
 `;
 const WEBR_VERSION = "0.6.0";
@@ -3633,15 +3667,15 @@ class MovecostEngine {
    * tiles, R turns the grid into a UTM GeoTIFF. Serialised through the queue
    * like an analysis, since it shares the R session.
    */
-  dtmFromGrid(grid, areaGeoJson) {
+  dtmFromGrid(grid, areaGeoJson, options = {}) {
     const task = this.queue.then(
-      () => this.gridNow(grid, areaGeoJson),
-      () => this.gridNow(grid, areaGeoJson)
+      () => this.gridNow(grid, areaGeoJson, options),
+      () => this.gridNow(grid, areaGeoJson, options)
     );
     this.queue = task.catch(() => void 0);
     return task;
   }
-  async gridNow(grid, areaGeoJson) {
+  async gridNow(grid, areaGeoJson, options) {
     const webR = await this.boot();
     const dir = `${WORK_DIR}/grid-${++this.requestCounter}`;
     await ensureDir(webR, dir);
@@ -3663,6 +3697,7 @@ class MovecostEngine {
         gridPath,
         areaPath,
         keepAs: handle,
+        maxCells: options.maxCells ?? null,
         width: grid.width,
         height: grid.height,
         crs: grid.crs,
@@ -4010,6 +4045,38 @@ async function fetchTerrariumGrid(features, zoom, onProgress) {
     zoom,
     tiles: total
   };
+}
+function estimateGrid(features, zoom) {
+  const bbox = boundsOf(features);
+  if (!bbox) return null;
+  const [west, south, east, north] = bbox;
+  if (!(east > west && north > south)) return null;
+  const px0 = Math.floor(lonToPixelX(west, zoom));
+  const px1 = Math.ceil(lonToPixelX(east, zoom));
+  const py0 = Math.floor(latToPixelY(north, zoom));
+  const py1 = Math.ceil(latToPixelY(south, zoom));
+  const width = Math.max(1, px1 - px0);
+  const height = Math.max(1, py1 - py0);
+  const tilesX = Math.floor((px1 - 1) / TILE_SIZE) - Math.floor(px0 / TILE_SIZE) + 1;
+  const tilesY = Math.floor((py1 - 1) / TILE_SIZE) - Math.floor(py0 / TILE_SIZE) + 1;
+  const centreLat = (south + north) / 2;
+  return {
+    zoom,
+    width,
+    height,
+    cells: width * height,
+    tiles: tilesX * tilesY,
+    resolution: mercatorResolution(zoom) * Math.cos(centreLat * Math.PI / 180)
+  };
+}
+function zoomWithinBudget(features, requested, maxCells, floor = 6) {
+  let estimate = null;
+  for (let zoom = requested; zoom >= floor; zoom -= 1) {
+    estimate = estimateGrid(features, zoom);
+    if (!estimate) return null;
+    if (estimate.cells <= maxCells && estimate.tiles <= MAX_TILES) return estimate;
+  }
+  return estimate;
 }
 const COLOUR_RAMPS = [
   {
@@ -4767,6 +4834,12 @@ const DEFAULT_PARAMS = {
   netwType: "allpairs",
   lcpN: 3
 };
+function withMemoryHint(message, where) {
+  if (!/cannot allocate|memory exhausted|out of memory|not enough memory|Cannot enlarge memory/i.test(message)) {
+    return message;
+  }
+  return `${message} — ${where} ran out of memory. Use a coarser detail level or a smaller area (fewer DEM cells), or 8 movement directions instead of 16.`;
+}
 function formatValue(value) {
   if (!Number.isFinite(value)) return "—";
   const abs = Math.abs(value);
@@ -4775,6 +4848,7 @@ function formatValue(value) {
 class MovecostPanel {
   constructor(app) {
     this.app = app;
+    if (isMobileDevice()) this.params.move = 8;
     void this.resolveBackend();
   }
   container = null;
@@ -4831,6 +4905,31 @@ class MovecostPanel {
   message = null;
   lastRun = null;
   produced = [];
+  /**
+   * How many DTM cells an analysis can take here.
+   *
+   * movecost builds a sparse transition matrix with one entry per cell and
+   * direction, and gdistance copies it several times; inside webR the whole
+   * thing must fit in the WebAssembly heap, which on an iPad is a few hundred
+   * megabytes before Safari kills the page. The figures are what stayed under
+   * that on GeoLibre 2.9.0: 150k cells (about 390 x 390) on a tablet, 400k on
+   * a desktop browser. The local R service has the machine's memory.
+   */
+  cellBudget() {
+    const inBrowser = !this.backend || this.backend.id === "webr";
+    if (!inBrowser) return { cells: 4e6, where: "the local R service" };
+    return isMobileDevice() ? { cells: 15e4, where: "R inside the browser on a tablet" } : { cells: 4e5, where: "R inside the browser" };
+  }
+  /** The grid the tile download would produce for the current area and detail. */
+  plannedGrid() {
+    if (!this.area) return null;
+    const budget = this.cellBudget();
+    const requested = Math.min(15, this.demZoom + 1);
+    const wanted = estimateGrid(this.area.features, requested);
+    const fits = zoomWithinBudget(this.area.features, requested, budget.cells);
+    if (!wanted || !fits) return null;
+    return { budget, wanted, fits, reduced: fits.zoom < requested, overBudget: fits.cells > budget.cells };
+  }
   /**
    * A copy of webR shipped alongside the plugin manifest takes precedence over
    * the CDN default. Returns undefined — and so the default — when none is.
@@ -5086,12 +5185,45 @@ class MovecostPanel {
         "Detail",
         select(DEM_ZOOMS, String(this.demZoom), (value) => {
           this.demZoom = Number(value);
+          this.render();
         }),
         {
-          hint: "Elevation comes from the AWS terrain tiles via elevatr. Finer detail means a much slower analysis."
+          hint: "Elevation comes from the AWS terrain tiles. Finer detail means a much slower analysis."
         }
       )
     );
+    const plan = viaTiles && !viaService ? this.plannedGrid() : null;
+    if (plan) {
+      const { budget, wanted, fits } = plan;
+      const cellsText = (g2) => `${g2.width} × ${g2.height} cells (${g2.cells.toLocaleString()}) at about ${Math.round(g2.resolution)} m`;
+      if (plan.overBudget) {
+        children.push(
+          note(
+            `Even the coarsest level gives ${cellsText(fits)}, above the ${budget.cells.toLocaleString()}-cell limit for ${budget.where}. Draw a smaller area.`,
+            "error"
+          )
+        );
+      } else if (plan.reduced) {
+        children.push(
+          note(
+            `${cellsText(wanted)} would not fit ${budget.where} (limit ${budget.cells.toLocaleString()} cells). The download will use level ${fits.zoom - 1} instead: ${cellsText(fits)}. Draw a smaller area for finer detail.`,
+            "warn"
+          )
+        );
+      } else {
+        children.push(el("p", { class: "mcx-summary", text: `Expected DEM: ${cellsText(wanted)}.` }));
+      }
+    } else if (viaService && this.area) {
+      const wanted = estimateGrid(this.area.features, this.demZoom);
+      if (wanted && wanted.cells > 2e6) {
+        children.push(
+          note(
+            `About ${wanted.cells.toLocaleString()} cells at this level — the analysis will take minutes. A coarser level or a smaller area keeps it interactive.`,
+            "warn"
+          )
+        );
+      }
+    }
     const download = button(
       this.downloadingDem ? "Downloading…" : "Download DEM",
       () => void this.downloadDem(),
@@ -5191,7 +5323,14 @@ class MovecostPanel {
       if (viaService) {
         result = await backend.fetchDem(areaGeoJson, this.demZoom);
       } else {
-        const tileZoom = Math.min(15, this.demZoom + 1);
+        const plan = this.plannedGrid();
+        if (plan?.overBudget) {
+          throw new Error(
+            `The area is too large for ${plan.budget.where}: even at the coarsest level it needs ${plan.fits.cells.toLocaleString()} cells (limit ${plan.budget.cells.toLocaleString()}). Draw a smaller area.`
+          );
+        }
+        const tileZoom = plan?.fits.zoom ?? Math.min(15, this.demZoom + 1);
+        const reducedTo = plan?.reduced ? tileZoom - 1 : null;
         const grid = await fetchTerrariumGrid(this.area.features, tileZoom, (done, total) => {
           this.progress = {
             phase: "running",
@@ -5200,17 +5339,27 @@ class MovecostPanel {
           };
           this.renderStatus();
         });
-        result = await backend.dtmFromGrid(grid, areaGeoJson);
-        result.summary.zoom = this.demZoom;
+        result = await backend.dtmFromGrid(grid, areaGeoJson, { maxCells: this.cellBudget().cells });
+        result.summary.zoom = reducedTo ?? this.demZoom;
+        if (reducedTo !== null) {
+          this.message = {
+            text: `Detail reduced to level ${reducedTo} (about ${Math.round(result.summary.resolution)} m) so the ${result.summary.width} × ${result.summary.height} DEM fits ${this.cellBudget().where}. Draw a smaller area for finer detail.`,
+            tone: "info"
+          };
+        }
       }
       const { bytes, summary, handle } = result;
       this.dtm = { name: `DEM (zoom ${summary.zoom})`, bytes, handle, summary };
       this.useArea = false;
       const cells = summary.width * summary.height;
-      this.message = cells > 4e5 ? {
-        text: `That is ${cells.toLocaleString()} cells. Cost-distance work grows with the cell count — consider a coarser detail level or a smaller area if the analysis drags.`,
-        tone: "warn"
-      } : null;
+      if (cells > this.cellBudget().cells) {
+        this.message = {
+          text: `That is ${cells.toLocaleString()} cells. Cost-distance work grows with the cell count — consider a coarser detail level or a smaller area if the analysis drags or runs out of memory.`,
+          tone: "warn"
+        };
+      } else if (!this.message) {
+        this.message = null;
+      }
       const b2 = summary.bounds;
       this.app.fitBounds?.([b2.west, b2.south, b2.east, b2.north]);
       this.downloadingDem = false;
@@ -5930,11 +6079,11 @@ class MovecostPanel {
         this.addResultsToMap(response);
         this.message = null;
       } else {
-        this.message = { text: response.error, tone: "error" };
+        this.message = { text: withMemoryHint(response.error, this.cellBudget().where), tone: "error" };
       }
       this.lastRun = { response, layers: this.produced };
     } catch (error) {
-      this.message = { text: describeError(error), tone: "error" };
+      this.message = { text: withMemoryHint(describeError(error), this.cellBudget().where), tone: "error" };
       this.lastRun = null;
     } finally {
       this.busy = false;
@@ -6060,7 +6209,7 @@ class MovecostPanel {
 }
 const PLUGIN_ID = "movecost";
 const PANEL_ID = "movecost-panel";
-const VERSION = "0.1.2";
+const VERSION = "0.1.3";
 class MovecostControl {
   constructor(onToggle) {
     this.onToggle = onToggle;
