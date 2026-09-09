@@ -82,19 +82,17 @@
 <p><em>Manage Plugins → Settings → Install from file</em> with <code>movecost-&lt;version&gt;.zip</code> from the <a href="https://github.com/enzococca/geolibre-movecost/releases">releases</a>. The mobile builds cannot install from a file.</p>
 
 <h2 id="backends">3. Where R runs</h2>
-<p>The analysis is R code (movecost, gdistance, terra). The plugin can run it in two places, and says which at the top of its panel:</p>
+<p>The analysis is R code (movecost, terra, sf, igraph). The plugin can run it in two places, and says which at the top of its panel:</p>
 <table>
 <tr><th>Backend</th><th>What it needs</th><th>Speed</th></tr>
 <tr><td><strong>In-browser R</strong> (webR)</td><td>Nothing: R compiled to WebAssembly is fetched on first use (about 65 MB, cached afterwards). Works on the iPad.</td><td>Seconds to a minute for a modest area; limited by the browser's memory (see <a href="#performance">§8</a>).</td></tr>
 <tr><td><strong>Local R service</strong></td><td>R on the same computer with the packages installed and the small service in <code>r-backend/</code> started; the plugin finds it on <code>127.0.0.1:8787</code> and offers <em>Recheck</em>.</td><td>Roughly a hundred times faster, no cell limit worth mentioning, and it can hand the study area straight to movecost.</td></tr>
 </table>
 <pre><code># once
-install.packages(c("plumber", "sf", "terra", "raster", "sp", "jsonlite", "elevatr", "progress"))
-# movecost 3.0.0 replaced the 2.x API this plugin speaks, so pin the 2.x release
-install.packages("remotes"); remotes::install_version("movecost", "2.2")
+install.packages(c("plumber", "movecost", "sf", "terra", "jsonlite", "elevatr", "progress"))
 # each session, from the plugin's folder
 Rscript r-backend/start.R</code></pre>
-<div class="note">CRAN now serves <strong>movecost 3.0.0</strong> (June 2026), a redesign in which the 2.x entry points (<code>movecost()</code>, <code>movecorr()</code>, …) are defunct and a cost surface is built once with <code>mc_surface()</code> and reused. The plugin's engine — and the WebAssembly build of the package, still at 2.2 — speak the 2.x API, so the service pins 2.2; it now says so plainly if it finds 3.x installed.</div>
+<div class="note">The plugin needs <strong>movecost 3.0.0</strong> (CRAN, June 2026) or later, and refuses to run against an older one. 3.0 builds the cost surface once with <code>mc_surface()</code> and reuses it across the analyses, so changing only the destinations or the cost limit is nearly instant. In the browser the package comes from the plugin's own WebAssembly repository, since the public one still carries 2.2 — nothing to configure.</div>
 
 <h2 id="walkthrough">4. Walkthrough: Pompeii to Herculaneum and Oplontis</h2>
 <p>A least-cost path analysis around Vesuvius: from the Forum of Pompeii to Herculaneum and to the Villa Poppaea at Oplontis. The three files used here are on the plugin site, so you can repeat every step: <a href="data/pompeii-origin.geojson">pompeii-origin.geojson</a>, <a href="data/destinations.geojson">destinations.geojson</a>, <a href="data/vesuvius-study-area.geojson">vesuvius-study-area.geojson</a>.</p>
@@ -127,21 +125,21 @@ Rscript r-backend/start.R</code></pre>
 <h2 id="analyses">5. The six analyses</h2>
 <table>
 <tr><th>Analysis</th><th>movecost</th><th>Locations</th><th>Produces</th></tr>
-<tr><td>Least-cost paths</td><td><code>movecost()</code></td><td>1 origin, 1+ destinations</td><td>Accumulated cost surface, cost surface, isolines, a path to each destination (optionally the return paths), destinations with cost.</td></tr>
-<tr><td>Least-cost corridor</td><td><code>movecorr()</code></td><td>2 locations</td><td>The corridor of low combined cost between them (optionally rescaled 0–1), and the path each way.</td></tr>
-<tr><td>Least-cost network</td><td><code>movenetw()</code></td><td>2+ locations</td><td>Paths between all pairs or between neighbours, the cost matrix, and optionally a path-density raster.</td></tr>
-<tr><td>Cost allocation</td><td><code>movealloc()</code></td><td>2+ origins</td><td>Every cell assigned to its cheapest origin, as zones and as a raster; optional isolines.</td></tr>
-<tr><td>Cost boundaries (isochrones)</td><td><code>movebound()</code></td><td>1+ origins</td><td>The limit reachable within given costs (e.g. 1 and 2 hours), as lines with their area.</td></tr>
-<tr><td>Ranked alternative paths</td><td><code>moverank()</code></td><td>1 origin, 1 destination</td><td>Up to six plausible routes ranked from optimal downwards, optionally with the corridor.</td></tr>
+<tr><td>Least-cost paths</td><td><code>mc_paths()</code></td><td>1 origin, 1+ destinations</td><td>Accumulated cost surface, cost surface, isolines, a path to each destination (optionally the return paths), destinations with cost.</td></tr>
+<tr><td>Least-cost corridor</td><td><code>mc_corridor()</code></td><td>2 locations</td><td>The corridor of low combined cost between them — symmetric (“reach”) or only the routes that actually go A → B (“through”), optionally rescaled 0–1 — and the path each way.</td></tr>
+<tr><td>Least-cost network</td><td><code>mc_network()</code></td><td>2+ locations</td><td>Paths between all pairs or between neighbours, the cost matrix, and optionally a path-density raster.</td></tr>
+<tr><td>Cost allocation</td><td><code>mc_alloc()</code></td><td>2+ origins</td><td>Every cell assigned to its cheapest origin, as zones and as a raster; optional isolines.</td></tr>
+<tr><td>Cost boundaries (isochrones)</td><td><code>mc_boundary()</code></td><td>1+ origins</td><td>The area reachable within given costs (e.g. 1 and 2 hours), as polygons with their area and perimeter.</td></tr>
+<tr><td>Ranked alternative paths</td><td><code>mc_rank()</code></td><td>1 origin, 1 destination</td><td>Several plausible routes ranked from optimal downwards, with the corridor they run through; a detour penalty controls how far apart they are pushed.</td></tr>
 </table>
-<p>Barriers — lines or polygons that movement cannot cross, such as a river, a cliff line or a wall — can be given from drawings or a layer for every analysis except allocation; a conductance value makes them merely expensive rather than impassable.</p>
+<p>Barriers — lines or polygons that movement cannot cross, such as a river, a cliff line or a wall — can be given from drawings or a layer for every analysis; a conductance value makes them merely expensive rather than impassable.</p>
 
 <h2 id="cost">6. Cost functions</h2>
-<p>All the cost functions of movecost 2.x are available, grouped in the menu by what they measure:</p>
+<p>All 26 movecost cost functions are available, grouped in the menu by what they measure:</p>
 <table>
 <tr><th>Group</th><th>Functions</th><th>Cost unit</th></tr>
 <tr><td>Walking time</td><td>Tobler (on-path, the default, and off-path), Márquez-Pérez et al. (modified Tobler), Irmischer-Clarke (male and female, on- and off-path), Uriarte González, Marín Arroyo, Alberti (pastoral foraging excursions), Garmy-Kaddouri-Rozenblat-Schneider, Rees, Kondo-Seino, Tripcevich</td><td>hours or minutes</td></tr>
-<tr><td>Metabolic energy</td><td>Pandolf et al. (with and without the downhill correction), Minetti et al., Herzog, Van Leusen, Llobera-Sluckin, Ardigò et al., Hare</td><td>J, kcal or W, as each function defines it</td></tr>
+<tr><td>Metabolic energy</td><td>Pandolf et al. (with and without the downhill correction), Minetti et al., Herzog, Van Leusen, Llobera-Sluckin, Ardigò et al., Hare</td><td>Megawatts, J/(kg·m), kJ/m or cal/km, as each function defines it — the panel names the one in use</td></tr>
 <tr><td>Abstract cost</td><td>Relative energetic expenditure, Bellavia, Eastman</td><td>dimensionless</td></tr>
 <tr><td>Wheeled vehicles</td><td>Wheeled-vehicle critical slope</td><td>dimensionless</td></tr>
 </table>
@@ -149,7 +147,7 @@ Rscript r-backend/start.R</code></pre>
 
 <h2 id="layers">7. Reading the results</h2>
 <ul>
-  <li><strong>Accumulated cost</strong> — for every cell, the cost of reaching it from the origin, in the function's unit. The isolines are its contours; the breaks can be set in the analysis options.</li>
+  <li><strong>Accumulated cost</strong> — for every cell, the cost of reaching it from the origin, in the function's unit. The isolines are its contours; their interval can be set in the analysis options, and is a tenth of the range if left alone.</li>
   <li><strong>Cost surface</strong> — the per-cell cost of crossing, before accumulation; it shows where the terrain itself is hard.</li>
   <li><strong>Least-cost paths</strong> carry the total cost to each destination; with <em>Also compute the return paths</em> the way back is drawn too, since slope-dependent cost is asymmetric.</li>
   <li>Rasters are layers of the <em>image</em> kind: the Layers panel's opacity slider and visibility toggle drive them, and the panel's <em>Raster display</em> section sets the colour ramp and opacity of the next run.</li>
