@@ -297,6 +297,13 @@ mcx_numeric <- function(params, name) {
   if (!length(v)) NULL else v
 }
 
+#' The isoline interval, or NULL for "let movecost pick a tenth of the range".
+#' The panel offers a number field, and an empty one arrives as zero.
+mcx_breaks <- function(params) {
+  v <- mcx_numeric(params, "breaks")
+  if (is.null(v) || v[1] <= 0) NULL else v[1]
+}
+
 # Everything mc_surface() needs. In movecost 2.x these travelled with every
 # analysis call; in 3.0 they define the cost graph, which is built once and
 # then read by all the analyses.
@@ -315,14 +322,8 @@ mcx_surface_args <- function(params) {
   )
 }
 
-# Cost functions whose output is a duration; only these care about `time`.
-MCX_TIME_FUNCTIONS <- c(
-  "t", "tofp", "mp", "icmonp", "icmoffp", "icfonp", "icfoffp",
-  "ug", "ma", "alb", "gkrs", "r", "ks", "trp"
-)
-
-mcx_is_time_function <- function(funct) funct %in% MCX_TIME_FUNCTIONS
-
+# Every mc_* function takes `time` and ignores it when the cost function is not
+# time based, so the engine no longer keeps a table of which ones are.
 mcx_time_unit <- function(params) {
   if (identical(mcx_pick(params, "time", "h"), "m")) "m" else "h"
 }
@@ -393,8 +394,8 @@ mcx_analysis_paths <- function(surface, origin, destin, params) {
   # The plugin has always drawn them next to the paths, and with the graph
   # already built the second call is cheap.
   acc_args <- list(surface = surface, origin = origin, time = time)
-  breaks <- mcx_numeric(params, "breaks")
-  if (!is.null(breaks)) acc_args$breaks <- breaks[1]
+  breaks <- mcx_breaks(params)
+  if (!is.null(breaks)) acc_args$breaks <- breaks
   acc <- mcx_call(movecost::mc_accum, acc_args)
 
   list(
@@ -464,8 +465,8 @@ mcx_analysis_network <- function(surface, nodes, params) {
 
 mcx_analysis_allocation <- function(surface, origin, params) {
   args <- list(surface = surface, origin = origin, time = mcx_time_unit(params))
-  breaks <- mcx_numeric(params, "breaks")
-  if (!is.null(breaks)) args$breaks <- breaks[1]
+  breaks <- mcx_breaks(params)
+  if (!is.null(breaks)) args$breaks <- breaks
   res <- mcx_call(movecost::mc_alloc, args)
 
   list(

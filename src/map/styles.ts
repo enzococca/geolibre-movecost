@@ -67,6 +67,7 @@ const RESULT_STYLES: Record<string, Partial<HostLayerStyle>> = {
   lcpBtoA: { strokeColor: "#f97316", strokeWidth: 2, lineDecoration: "arrow", lineDecorationColor: "#f97316" },
   rankedPaths: { strokeColor: "#7c3aed", strokeWidth: 2.5 },
   network: { strokeColor: "#7c3aed", strokeWidth: 2.5 },
+  nodes: { fillColor: "#7c3aed", fillOpacity: 1, strokeColor: "#ffffff", strokeWidth: 2, circleRadius: 7 },
   isolines: { strokeColor: "#1d4ed8", strokeWidth: 1.5 },
   boundaries: { fillColor: "#f59e0b", fillOpacity: 0.25, strokeColor: "#b45309", strokeWidth: 1.5 },
   destinations: { fillColor: "#dc2626", fillOpacity: 1, strokeColor: "#ffffff", circleRadius: 6 },
