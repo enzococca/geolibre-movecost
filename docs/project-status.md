@@ -77,6 +77,19 @@ the script aborts if a future movecost ever ships compiled code.
 into webR under Node and runs `mcx_run()` itself — verified with movecost 3.0.0,
 terra 1.9.46, sf 1.1.1, igraph 2.3.1, ggplot2 4.0.3.
 
+**Still to verify live:** the PR preview
+(`https://opengeos.org/pages-preview/geolibre-plugins/pr-54/`) is stuck on
+0.1.8 because its workflow needs a maintainer to approve the run, so no
+end-to-end run against a real GeoLibre host has happened on 0.2.0 yet. 0.2.0 is
+installed into GeoLibre Desktop on the Mac
+(`~/Library/Application Support/org.geolibre.desktop/plugins/movecost`), which
+is the quickest way to look at it. The guide screenshots in `docs/guide/images/`
+still show 0.1.8's panel — the differences are the version string, "Isoline
+interval" in place of "Isoline values", the dropped "irregular outline"
+checkbox, and the terrain-factor control now offered for most functions.
+Re-capture with `scripts/capture-guide.mjs` once a host serving 0.2.0 is
+reachable.
+
 **Gotcha for future sessions:** R on the Mac only works under
 `do shell script` with `PROJ_LIB=/opt/homebrew/share/proj` (and `GDAL_DATA`)
 exported, otherwise terra dies with "Cannot find proj.db".
