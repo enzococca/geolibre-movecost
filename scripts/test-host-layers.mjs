@@ -205,6 +205,72 @@ const fallback = await page.evaluate(async (bundleSource) => {
   return { initialOpacity, healed, reAdded, afterRemove, noMap, thumbOnly };
 }, bundle);
 
+// --- store-faithful host: layer order after a run ---------------------------
+// GeoLibre keeps `layers` bottom-to-top, anchors a group where its first member
+// sits (normalizeGroupContiguity) and moves layers into a group right after the
+// group's last member (moveLayersToGroup). The markers must end on top of a
+// run's rasters under exactly those rules.
+const ordering = await page.evaluate(async (bundleSource) => {
+  let layers = [];
+  const groups = [];
+  const normalize = (list) => {
+    const out = []; const placed = new Set();
+    for (let i = 0; i < list.length; i++) {
+      const l = list[i];
+      if (placed.has(l.id)) continue;
+      if (!l.groupId) { out.push(l); placed.add(l.id); continue; }
+      for (let j = i; j < list.length; j++) {
+        const c = list[j];
+        if (c.groupId === l.groupId && !placed.has(c.id)) { out.push(c); placed.add(c.id); }
+      }
+    }
+    return out;
+  };
+  const app = {
+    addGeoJsonLayer: () => "x", addMapControl: () => true, removeMapControl() {},
+    getMap: () => ({ on() {}, off() {}, getCanvas: () => document.getElementById("c"), addSource() {}, removeSource() {}, getSource: () => null, addLayer() {}, removeLayer() {}, getLayer: () => null }),
+    registerExternalNativeLayer: (reg) => {
+      const i = layers.findIndex((l) => l.id === reg.id);
+      if (i >= 0) layers[i] = { ...layers[i], name: reg.name };
+      else layers.push({ id: reg.id, name: reg.name, type: reg.type });
+    },
+    unregisterExternalNativeLayer: (id) => { layers = layers.filter((l) => l.id !== id); },
+    addLayerGroup: (name, ids) => {
+      const id = "g" + (groups.length + 1); groups.push({ id, name });
+      const set = new Set(ids ?? []);
+      layers = normalize(layers.map((l) => (set.has(l.id) ? { ...l, groupId: id } : l)));
+      return id;
+    },
+    moveLayersToGroup: (ids, gid) => {
+      if (gid && !groups.some((g) => g.id === gid)) return;
+      const req = new Set(ids);
+      const moving = layers.filter((l) => req.has(l.id) && (l.groupId ?? null) !== gid);
+      if (!moving.length) return;
+      const mv = new Set(moving.map((l) => l.id));
+      const without = layers.filter((l) => !mv.has(l.id));
+      let last = -1; without.forEach((l, i) => { if (l.groupId === gid) last = i; });
+      const index = last < 0 ? without.length : last + 1;
+      const next = [...without]; next.splice(index, 0, ...moving.map((l) => ({ ...l, groupId: gid ?? undefined })));
+      layers = normalize(next);
+    },
+    removeLayerGroup: (id) => { layers = layers.map((l) => (l.groupId === id ? { ...l, groupId: undefined } : l)); },
+    listLayers: () => layers.map((l) => ({ id: l.id, name: l.name })),
+    registerRightPanel: () => () => {},
+  };
+  const mod = await import(URL.createObjectURL(new Blob([bundleSource], { type: "text/javascript" })));
+  const p = new mod.MovecostPanel(app);
+  const pt = (x) => ({ type: "Feature", geometry: { type: "Point", coordinates: [x, x] }, properties: {} });
+  p.origin = { kind: "click", label: "x", features: [pt(1)] }; p.refreshMarkers("origin");
+  p.destination = { kind: "click", label: "x", features: [pt(2), pt(3)] }; p.refreshMarkers("destination");
+  // A terrain layer arrives after the markers: it must end below them.
+  const f32 = new Float32Array(12).map((_, i) => i);
+  const b64 = btoa(String.fromCharCode(...new Uint8Array(f32.buffer)));
+  const raster = { name: "a", width: 4, height: 3, data: b64, bounds: { west: 0, south: 0, east: 1, north: 1 }, min: 0, max: 11 };
+  const line = JSON.stringify({ type: "FeatureCollection", features: [{ type: "Feature", geometry: { type: "LineString", coordinates: [[0, 0], [1, 1]] }, properties: {} }] });
+  p.addResultsToMap({ ok: true, analysis: "paths", crs: "EPSG:32633", elapsedSeconds: 1, result: { vectors: { lcps: line }, rasters: { accumulated: raster }, tables: {} }, log: [] });
+  return { order: layers.map((l) => `${l.id.replace(/-[a-z0-9]+-\d+$/, "")}@${l.groupId}`), groups: groups.map((g) => g.name) };
+}, bundle);
+
 await browser.close();
 
 let failures = 0;
@@ -247,6 +313,10 @@ check(fallback.reAdded.layer && fallback.reAdded.source, "fallback overlay re-ad
 check(!fallback.afterRemove.layer && !fallback.afterRemove.source, "removed overlay stays removed", JSON.stringify(fallback.afterRemove));
 check(fallback.noMap.produced === 1 && fallback.noMap.handle === null && fallback.noMap.thumb?.[0] === 4, "no map: raster kept as a panel thumbnail", JSON.stringify(fallback.noMap));
 check(fallback.thumbOnly === 1, "no map: thumbnail rendered in the results list", String(fallback.thumbOnly));
+
+const top2 = ordering.order.slice(-2).map((x) => x.split("@")[0]);
+check(top2.join(",") === "movecost-origin,movecost-destination", "markers end above a run's rasters and vectors (store-faithful host)", JSON.stringify(ordering.order));
+check(new Set(ordering.order.slice(-2).map((x) => x.split("@")[1])).size === 1, "both markers share one locations group after the run");
 
 console.log(failures ? `\n${failures} check(s) failed.` : "\nAll host-layer checks passed.");
 process.exit(failures ? 1 : 0);

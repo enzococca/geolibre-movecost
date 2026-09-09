@@ -1529,8 +1529,15 @@ export class MovecostPanel {
     if (!this.markers.origin && !this.markers.destination) return;
     const oldGroup = this.locationsGroupId;
     this.locationsGroupId = null;
-    this.refreshMarkers("origin", true);
-    this.refreshMarkers("destination", true);
+    // Both layers come off before either goes back: the host anchors a group
+    // where its first member sits, so re-adding one marker while the other is
+    // still low in the stack would drag the new group down to it.
+    for (const which of ["origin", "destination"] as const) {
+      this.markers[which]?.remove();
+      this.markers[which] = null;
+    }
+    this.refreshMarkers("origin");
+    this.refreshMarkers("destination");
     if (oldGroup && oldGroup !== this.locationsGroupId) {
       try {
         this.app.removeLayerGroup?.(oldGroup);

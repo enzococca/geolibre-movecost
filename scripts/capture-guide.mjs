@@ -146,6 +146,9 @@ await page.waitForFunction(
 );
 await page.waitForTimeout(5000);
 await shot("07-results");
+// The Results section sits at the bottom of the panel: scroll it into view.
+await page.locator("button", { hasText: /^Remove these result layers$/ }).first().scrollIntoViewIfNeeded();
+await page.waitForTimeout(800);
 await shot("08-results-panel", { clip: await panelBox() });
 
 await browser.close();

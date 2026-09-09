@@ -4,14 +4,14 @@ Slope-dependent cost analysis inside [GeoLibre](https://geolibre.app), powered b
 Gianmarco Alberti's [**movecost**](https://cran.r-project.org/package=movecost)
 R package.
 
-The plugin runs movecost through a small R service on your own machine
-(`r-backend/`), and carries a second, zero-install backend that runs R itself as
-WebAssembly in the page. **The local R service is the fast path** and the one
-to use for real work. The in-browser path works too, with one prerequisite: the
-`terra` binary published for webR will not load, so the plugin has to be pointed
-at a rebuilt one (`scripts/build-terra-wasm.sh`, then `MOVECOST_WASM_REPO`) —
-and it is roughly a hundred times slower. The panel probes for the R service
-when it opens and tells you which backend it got. See
+The plugin runs movecost in one of two places: a small R service on your own
+machine (`r-backend/`, **the fast path** for real work), or R itself compiled to
+WebAssembly inside the page, which needs nothing installed and also runs on the
+iPad and Android builds — roughly a hundred times slower, and bounded by the
+browser's memory. The in-browser path needs a rebuilt `terra` (the binary
+published for webR does not load); the plugin fetches it from its own site
+automatically, and `scripts/build-terra-wasm.sh` rebuilds it. The panel probes
+for the R service when it opens and says which backend it got. See
 [docs/WEBR-FINDINGS.md](docs/WEBR-FINDINGS.md) and
 [docs/TERRA-WASM.md](docs/TERRA-WASM.md).
 
@@ -29,6 +29,13 @@ Irmischer-Clarke, Márquez-Pérez, Uriarte González, Marín Arroyo, Alberti,
 Rees, Kondo-Seino, Tripcevich, the wheeled-vehicle critical-slope function, the
 abstract-cost functions, and the metabolic ones (Pandolf, Minetti, Herzog,
 Van Leusen, Llobera-Sluckin, Ardigò, Hare).
+
+**User guide:** [enzococca.github.io/geolibre-movecost/guide/](https://enzococca.github.io/geolibre-movecost/guide/) —
+installation on desktop and iPad, where R runs, a walkthrough from Pompeii to
+Herculaneum and Oplontis over Vesuvius (with the data to repeat it), the six
+analyses, the cost functions, and what the size and memory limits mean. The
+source of the guide is `docs/guide/`; its screenshots are captured from a live
+GeoLibre build by `scripts/capture-guide.mjs`.
 
 ## Set up the R service
 
