@@ -113,7 +113,6 @@ const DEFAULT_PARAMS: AnalysisParams = {
   L: 0,
   N: 1,
   V: 1.2,
-  irregularDtm: false,
   autoReproject: true,
   netwType: "allpairs",
   lcpN: 3,
@@ -213,7 +212,7 @@ export class MovecostPanel {
 
   constructor(private readonly app: GeoLibreAppAPI) {
     // On a tablet R runs inside the browser with a hard memory ceiling, and
-    // 16 directions double the transition matrix over 8 for a marginal gain.
+    // 16 directions double the graph's edge count over 8 for a marginal gain.
     if (isMobileDevice()) this.params.move = 8;
     void this.resolveBackend();
   }
@@ -221,12 +220,14 @@ export class MovecostPanel {
   /**
    * How many DTM cells an analysis can take here.
    *
-   * movecost builds a sparse transition matrix with one entry per cell and
-   * direction, and gdistance copies it several times; inside webR the whole
-   * thing must fit in the WebAssembly heap, which on an iPad is a few hundred
-   * megabytes before Safari kills the page. The figures are what stayed under
-   * that on GeoLibre 2.9.0: 150k cells (about 390 x 390) on a tablet, 400k on
-   * a desktop browser. The local R service has the machine's memory.
+   * mc_surface() builds a directed igraph with one vertex per cell and one
+   * edge per cell and direction; inside webR the whole graph must fit in the
+   * WebAssembly heap, which on an iPad is a few hundred megabytes before
+   * Safari kills the page. The figures are what stayed under that on GeoLibre
+   * 2.9.0: 150k cells (about 390 x 390) on a tablet, 400k on a desktop
+   * browser. The local R service has the machine's memory. The graph is built
+   * once and reused, so a second analysis on the same terrain and cost
+   * function costs nothing extra.
    */
   private cellBudget(): { cells: number; where: string } {
     const inBrowser = !this.backend || this.backend.id === "webr";
@@ -504,14 +505,6 @@ export class MovecostPanel {
         (checked) => {
           this.params.autoReproject = checked;
         },
-      ),
-      checkbox(
-        "DTM has an irregular outline",
-        this.params.irregularDtm === true,
-        (checked) => {
-          this.params.irregularDtm = checked;
-        },
-        "Tick this when the DTM is a clipped shape with NoData around it.",
       ),
     );
 
@@ -1174,7 +1167,7 @@ export class MovecostPanel {
       case "number":
         return field(
           extra.label,
-          numberInput(Number(this.extras[extra.key] ?? DEFAULT_PARAMS.lcpN ?? 3), (value) => {
+          numberInput(Number(this.extras[extra.key] ?? extra.defaultValue ?? 0), (value) => {
             this.extras[extra.key] = value;
           }, { min: extra.min, max: extra.max, step: extra.step }),
           { inline: true, hint: extra.hint },

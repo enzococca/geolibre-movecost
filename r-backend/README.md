@@ -11,10 +11,10 @@ back to the in-browser runtime and says so.
 ## One-time setup
 
 ```r
-# movecost 3.0.0 changed its entire API (compute-once `mc_*` functions); this
-# plugin speaks the 2.x one, which is also what the WebAssembly build carries.
-install.packages(c("plumber", "sf", "terra", "raster", "sp", "jsonlite"))
-install.packages("remotes"); remotes::install_version("movecost", "2.2")
+# movecost 3.0.0 or later. The plugin speaks the compute-once `mc_*` API it
+# introduced; in 3.0 the 2.x entry points are defunct stubs, and the engine
+# refuses to run against an older installation rather than failing obscurely.
+install.packages(c("plumber", "movecost", "sf", "terra", "jsonlite"))
 
 # Optional, for "draw an area and download a DEM". `progress` is an elevatr
 # dependency that is only needed at call time, so install it explicitly.

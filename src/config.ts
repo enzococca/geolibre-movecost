@@ -35,7 +35,7 @@ export const UPSTREAM_WASM_REPO = "https://repo.r-wasm.org";
 
 /**
  * The repository published with the plugin's own site, carrying the rebuilt
- * terra (docs/TERRA-WASM.md). The panel also discovers a `wasm-repo/` next to
+ * terra and the WebAssembly build of movecost 3.0 (docs/TERRA-WASM.md). The panel also discovers a `wasm-repo/` next to
  * whichever manifest the plugin was installed from, but a copy installed from
  * the GeoLibre plugin registry is served from plugins.geolibre.app with no
  * repository beside it, so this one is always consulted before upstream.
@@ -61,29 +61,26 @@ export const WASM_CRAN_REPOS: string[] = (() => {
 export const WASM_CRAN_REPO = WASM_CRAN_REPOS[0];
 
 /**
- * Installed in this order. movecost 2.x sits on the raster/sp stack; terra and
- * sf are used by the engine itself for I/O and reprojection.
+ * Installed in this order. movecost 3.0 dropped the raster/sp/gdistance/chron
+ * stack for terra, sf and igraph; ggplot2 comes with it because the package
+ * imports it for its plot methods, which the engine never calls.
  */
 export const R_PACKAGES = [
   "jsonlite",
-  "sp",
-  "raster",
   "terra",
   "sf",
-  "gdistance",
-  "chron",
+  "igraph",
+  "ggplot2",
   "movecost",
 ] as const;
 
 /** Rough download sizes, only used to make the progress bar honest. */
 export const R_PACKAGE_WEIGHTS: Record<string, number> = {
   jsonlite: 1,
-  sp: 2,
-  raster: 4,
   terra: 8,
   sf: 10,
-  gdistance: 2,
-  chron: 1,
+  igraph: 8,
+  ggplot2: 6,
   movecost: 2,
 };
 

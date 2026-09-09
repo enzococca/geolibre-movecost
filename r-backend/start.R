@@ -48,7 +48,7 @@ if (!file.exists(api_path)) {
 }
 
 # --- dependencies -------------------------------------------------------------
-required <- c("plumber", "jsonlite", "sf", "terra", "raster", "sp", "movecost")
+required <- c("plumber", "jsonlite", "sf", "terra", "movecost")
 # elevatr powers "draw an area and download a DEM"; `progress` is one of its
 # soft dependencies that is genuinely needed at call time, so check it here
 # rather than letting the first download fail with a bare namespace error.
@@ -59,6 +59,18 @@ if (length(missing)) {
   stop(
     "Missing R packages: ", paste(missing, collapse = ", "), "\n",
     'Install them with: install.packages(c("', paste(missing, collapse = '", "'), '"))',
+    call. = FALSE
+  )
+}
+
+# The engine speaks movecost 3.0's compute-once API; in 3.0 the 2.x functions
+# are defunct stubs, so an older installation would fail one analysis at a time
+# rather than here, where the remedy is one line away.
+movecost_version <- utils::packageVersion("movecost")
+if (movecost_version < "3.0.0") {
+  stop(
+    "movecost ", movecost_version, " is installed; this plugin needs 3.0.0 or later.\n",
+    'Update it with: install.packages("movecost")',
     call. = FALSE
   )
 }

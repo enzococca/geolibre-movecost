@@ -26,6 +26,10 @@ mcx_env$target_crs <- NULL
 # thousand cells; the analyses and the preview accept a handle in place of a
 # path, so a downloaded DTM never has to become a file there.
 mcx_env$dtms <- list()
+# The cost graph mc_surface() builds, kept between runs so that changing only
+# the points does not rebuild it. One at a time — see mcx_build_surface().
+mcx_env$surface <- NULL
+mcx_env$surface_key <- NULL
 
 mcx_log <- function(...) {
   msg <- paste0(...)
@@ -38,48 +42,48 @@ mcx_stop <- function(...) stop(paste0(...), call. = FALSE)
 # --- environment -------------------------------------------------------------
 
 mcx_version <- function() {
+  version_of <- function(pkg) {
+    if (requireNamespace(pkg, quietly = TRUE)) {
+      as.character(utils::packageVersion(pkg))
+    } else {
+      NA_character_
+    }
+  }
   list(
     r = paste0(R.version$major, ".", R.version$minor),
-    movecost = as.character(utils::packageVersion("movecost")),
-    terra = as.character(utils::packageVersion("terra")),
-    sf = as.character(utils::packageVersion("sf")),
-    raster = as.character(utils::packageVersion("raster"))
+    movecost = version_of("movecost"),
+    terra = version_of("terra"),
+    sf = version_of("sf"),
+    igraph = version_of("igraph")
   )
 }
 
 mcx_require <- function() {
-  needed <- c("movecost", "raster", "sp", "sf", "terra", "jsonlite")
+  needed <- c("movecost", "sf", "terra", "jsonlite")
   missing <- needed[!vapply(needed, requireNamespace, logical(1), quietly = TRUE)]
   if (length(missing)) {
     mcx_stop("Missing R packages: ", paste(missing, collapse = ", "))
   }
-  # movecost 3.0.0 (CRAN, June 2026) replaced the 2.x entry points with a
-  # compute-once API (mc_surface() + mc_*) and left `movecost()` and friends as
-  # defunct stubs. This engine speaks the 2.x API, and the WebAssembly
-  # repository still carries 2.2, so say plainly what is wrong rather than
-  # letting a defunct error surface.
+  # movecost 3.0.0 (CRAN, June 2026) replaced the per-analysis functions with a
+  # compute-once API: mc_surface() builds the cost graph and mc_paths() and its
+  # siblings reuse it. This engine speaks that API, and 2.x has no equivalent,
+  # so an old installation is named here rather than left to fail somewhere
+  # inside a function that does not exist.
   version <- utils::packageVersion("movecost")
-  if (version >= "3.0.0") {
+  if (version < "3.0.0") {
     mcx_stop(
-      "This plugin needs movecost 2.x (the WebAssembly build is 2.2); ",
-      "the installed version is ", as.character(version), ", whose 2.x entry points are ",
-      "defunct. Install the matching release with: ",
-      'remotes::install_version("movecost", "2.2")'
+      "This plugin needs movecost 3.0.0 or later; the installed version is ",
+      as.character(version), '. Update it with: install.packages("movecost")'
     )
   }
   invisible(TRUE)
 }
 
-# movecost renders a plot on every call. Inside webR that would try to paint on
-# the canvas device and slow everything down, so we swallow it.
+# Nothing in the mc_* API draws: movecost 3.0 moved plotting into plot()
+# methods, so the analyses no longer need a null graphics device around them.
+# Start-up chatter would still land in the response, so calls still go through
+# here.
 mcx_quietly <- function(expr) {
-  grDevices::pdf(NULL)
-  on.exit(
-    {
-      try(grDevices::dev.off(), silent = TRUE)
-    },
-    add = TRUE
-  )
   suppressWarnings(suppressMessages(force(expr)))
 }
 
@@ -152,15 +156,38 @@ mcx_read_vector <- function(path, target_crs, what = "layer") {
   v
 }
 
-# movecost 2.x expects sp classes; keep at least one attribute column so the
-# coercion produces a SpatialPointsDataFrame rather than a bare SpatialPoints.
-mcx_as_spatial <- function(v) {
+# movecost 3.0 takes sf objects directly, so nothing is coerced to sp any more.
+# The points still need at least one attribute column: it is what the plugin
+# labels them with on the map, and what the costs come back attached to.
+mcx_ensure_id <- function(v) {
   if (is.null(v)) {
     return(NULL)
   }
   keep <- setdiff(names(v), attr(v, "sf_column"))
   if (!length(keep)) v$mcx_id <- seq_len(nrow(v))
-  methods::as(v, "Spatial")
+  v
+}
+
+#' A data frame jsonlite can serialise.
+#'
+#' movecost 3.0 returns measured columns as `units` objects — boundary areas in
+#' m^2, path lengths in m — and jsonlite has no method for those. The Rd pages
+#' name the unit of every such column, so the class is simply stripped and the
+#' number travels plain.
+mcx_plain_table <- function(x) {
+  if (is.null(x)) {
+    return(NULL)
+  }
+  df <- as.data.frame(x)
+  for (i in seq_along(df)) {
+    col <- df[[i]]
+    if (inherits(col, "units") || inherits(col, "difftime")) {
+      df[[i]] <- as.numeric(col)
+    } else if (!is.atomic(col)) {
+      df[[i]] <- as.character(col)
+    }
+  }
+  df
 }
 
 mcx_sf_to_geojson <- function(x, fallback_crs = mcx_env$target_crs) {
@@ -180,9 +207,15 @@ mcx_sf_to_geojson <- function(x, fallback_crs = mcx_env$target_crs) {
     mcx_stop("A result layer came back without a CRS and none could be inferred.")
   }
   v <- sf::st_transform(v, 4326)
-  # Drop columns sf cannot serialise (lists, matrices) before writing.
+  # Drop columns sf cannot serialise (lists, matrices) before writing, and
+  # strip the `units` class off the measured ones so GeoJSON gets bare numbers.
   drop <- vapply(sf::st_drop_geometry(v), function(col) !is.atomic(col), logical(1))
   if (any(drop)) v <- v[, !c(drop, FALSE), drop = FALSE]
+  for (nm in setdiff(names(v), attr(v, "sf_column"))) {
+    if (inherits(v[[nm]], "units") || inherits(v[[nm]], "difftime")) {
+      v[[nm]] <- as.numeric(v[[nm]])
+    }
+  }
   tmp <- tempfile(fileext = ".geojson")
   on.exit(unlink(tmp), add = TRUE)
   suppressWarnings(sf::st_write(
@@ -252,11 +285,26 @@ mcx_pick <- function(params, name, default) {
   if (is.null(v) || (length(v) == 1 && is.na(v))) default else v
 }
 
-# Cost-function parameters shared by every movecost entry point.
-mcx_common_args <- function(params) {
+#' Finite numbers from a parameter that may arrive as a list, a string, or not
+#' at all. Returns NULL rather than an empty vector so callers can just test it.
+mcx_numeric <- function(params, name) {
+  v <- mcx_pick(params, name, NULL)
+  if (is.null(v) || !length(v)) {
+    return(NULL)
+  }
+  v <- suppressWarnings(as.numeric(unlist(v)))
+  v <- v[is.finite(v)]
+  if (!length(v)) NULL else v
+}
+
+# Everything mc_surface() needs. In movecost 2.x these travelled with every
+# analysis call; in 3.0 they define the cost graph, which is built once and
+# then read by all the analyses.
+mcx_surface_args <- function(params) {
   list(
     funct     = mcx_pick(params, "funct", "t"),
     move      = as.integer(mcx_pick(params, "move", 16)),
+    field     = as.numeric(mcx_pick(params, "field", 0)),
     cogn.slp  = isTRUE(mcx_pick(params, "cognSlope", FALSE)),
     topo.dist = isTRUE(mcx_pick(params, "topoDist", FALSE)),
     sl.crit   = as.numeric(mcx_pick(params, "slCrit", 10)),
@@ -265,13 +313,9 @@ mcx_common_args <- function(params) {
     N         = as.numeric(mcx_pick(params, "N", 1)),
     V         = as.numeric(mcx_pick(params, "V", 1.2))
   )
-  # `z` is deliberately absent: it is elevatr's zoom level, meaningful only when
-  # movecost downloads the terrain itself, and it is supplied by the terrain
-  # list in that case. Setting it here as well makes movecost reject the call
-  # with "formal argument z matched by multiple actual arguments".
 }
 
-# Cost functions whose output is a duration; only these accept `time`.
+# Cost functions whose output is a duration; only these care about `time`.
 MCX_TIME_FUNCTIONS <- c(
   "t", "tofp", "mp", "icmonp", "icmoffp", "icfonp", "icfoffp",
   "ug", "ma", "alb", "gkrs", "r", "ks", "trp"
@@ -279,192 +323,216 @@ MCX_TIME_FUNCTIONS <- c(
 
 mcx_is_time_function <- function(funct) funct %in% MCX_TIME_FUNCTIONS
 
+mcx_time_unit <- function(params) {
+  if (identical(mcx_pick(params, "time", "h"), "m")) "m" else "h"
+}
+
 mcx_call <- function(fun, args) {
   mcx_quietly(do.call(fun, args))
 }
 
+# --- the cost surface --------------------------------------------------------
+
+# The one expensive step. mc_surface() turns the DTM into a directed graph of
+# per-cell movement costs, and every analysis reads that graph rather than
+# rebuilding it. Runs that differ only in their points — another destination,
+# a second cost limit — therefore cost a Dijkstra pass instead of a full
+# rebuild, which is the whole reason the 3.0 API is shaped this way.
+#
+# Exactly one surface is kept. Inside webR the graph is the largest object in
+# the heap, so the previous one is dropped and collected before a new one is
+# built, never held alongside it.
+mcx_surface_signature <- function(source_key, barrier_key, args) {
+  paste(
+    c(source_key, barrier_key,
+      vapply(args, function(v) paste(as.character(v), collapse = ","), character(1))),
+    collapse = "|"
+  )
+}
+
+mcx_forget_surface <- function() {
+  mcx_env$surface <- NULL
+  mcx_env$surface_key <- NULL
+  invisible(NULL)
+}
+
+mcx_build_surface <- function(source, barrier, barrier_key, params) {
+  args <- mcx_surface_args(params)
+  signature <- mcx_surface_signature(source$key, barrier_key, args)
+  if (!is.null(mcx_env$surface) && identical(mcx_env$surface_key, signature)) {
+    mcx_log("Reusing the cost surface already built for these settings")
+    return(mcx_env$surface)
+  }
+  mcx_forget_surface()
+  invisible(gc(full = TRUE))
+
+  call_args <- c(list(dtm = source$dtm), args)
+  if (is.null(source$dtm)) {
+    call_args$studyplot <- source$studyplot
+    call_args$z <- source$zoom
+  }
+  if (!is.null(barrier)) call_args$barrier <- barrier
+
+  mcx_log("Building the cost surface (", args$funct, ", ", args$move, " directions)")
+  surface <- mcx_call(movecost::mc_surface, call_args)
+  mcx_env$surface <- surface
+  mcx_env$surface_key <- signature
+  surface
+}
+
 # --- analyses ----------------------------------------------------------------
 
-mcx_analysis_paths <- function(terrain, origin, destin, barrier, params) {
-  args <- c(
-    terrain,
-    list(
-      origin = origin, destin = destin, barrier = barrier,
-      field = as.numeric(mcx_pick(params, "field", 0)),
-      irregular.dtm = isTRUE(mcx_pick(params, "irregularDtm", FALSE)),
-      return.base = isTRUE(mcx_pick(params, "returnBase", FALSE)),
-      graph.out = FALSE, export = FALSE
-    ),
-    mcx_common_args(params)
-  )
-  if (mcx_is_time_function(args$funct)) args$time <- mcx_pick(params, "time", "h")
-  breaks <- mcx_pick(params, "breaks", NULL)
-  if (!is.null(breaks) && length(breaks)) args$breaks <- as.numeric(breaks)
-
-  res <- mcx_call(movecost::movecost, args)
+mcx_analysis_paths <- function(surface, origin, destin, params) {
+  time <- mcx_time_unit(params)
+  res <- mcx_call(movecost::mc_paths, list(
+    surface = surface, origin = origin, destin = destin,
+    return.base = isTRUE(mcx_pick(params, "returnBase", FALSE)),
+    time = time
+  ))
+  # The accumulated cost surface and its isolines are a separate call in 3.0.
+  # The plugin has always drawn them next to the paths, and with the graph
+  # already built the second call is cheap.
+  acc_args <- list(surface = surface, origin = origin, time = time)
+  breaks <- mcx_numeric(params, "breaks")
+  if (!is.null(breaks)) acc_args$breaks <- breaks[1]
+  acc <- mcx_call(movecost::mc_accum, acc_args)
 
   list(
     vectors = list(
-      lcps      = mcx_sf_to_geojson(res$LCPs),
-      lcpsBack  = mcx_sf_to_geojson(res$LCPs.back),
-      isolines  = mcx_sf_to_geojson(res$isolines),
-      destinations = mcx_sf_to_geojson(res$dest.loc.w.cost)
+      lcps         = mcx_sf_to_geojson(res$paths),
+      lcpsBack     = mcx_sf_to_geojson(res$paths.back),
+      isolines     = mcx_sf_to_geojson(acc$isolines),
+      destinations = mcx_sf_to_geojson(res$destin)
     ),
     rasters = list(
-      accumulated = mcx_raster_payload(res$accumulated.cost.raster, "accumulated_cost"),
-      costSurface = mcx_raster_payload(res$cost.surface, "cost_surface")
+      accumulated = mcx_raster_payload(acc$accum, "accumulated_cost"),
+      costSurface = mcx_raster_payload(surface$cost.raster, "cost_surface")
     ),
     tables = list(
-      destinations = if (!is.null(res$dest.loc.w.cost)) {
-        as.data.frame(res$dest.loc.w.cost)
+      destinations = mcx_plain_table(
+        if (!is.null(res$destin)) sf::st_drop_geometry(res$destin) else NULL
+      )
+    )
+  )
+}
+
+mcx_analysis_corridor <- function(surface, a, b, params) {
+  method <- mcx_pick(params, "corridorMethod", "reach")
+  if (!method %in% c("reach", "through")) method <- "reach"
+  res <- mcx_call(movecost::mc_corridor, list(
+    surface = surface, a = a, b = b,
+    method = method,
+    lcp = TRUE,
+    rescale = isTRUE(mcx_pick(params, "rescale", FALSE)),
+    time = mcx_time_unit(params)
+  ))
+
+  list(
+    vectors = list(
+      lcpAtoB = mcx_sf_to_geojson(res$lcp.AtoB),
+      lcpBtoA = mcx_sf_to_geojson(res$lcp.BtoA)
+    ),
+    rasters = list(
+      corridor = mcx_raster_payload(res$corridor, "least_cost_corridor")
+    )
+  )
+}
+
+mcx_analysis_network <- function(surface, nodes, params) {
+  type <- mcx_pick(params, "netwType", "allpairs")
+  if (!type %in% c("allpairs", "neigh")) type <- "allpairs"
+  res <- mcx_call(movecost::mc_network, list(
+    surface = surface, nodes = nodes,
+    type = type,
+    density = isTRUE(mcx_pick(params, "lcpDensity", FALSE)),
+    time = mcx_time_unit(params)
+  ))
+
+  list(
+    vectors = list(
+      network = mcx_sf_to_geojson(res$paths),
+      nodes = mcx_sf_to_geojson(res$nodes)
+    ),
+    rasters = list(
+      density = mcx_raster_payload(res$density.perc, "lcp_density_percent")
+    ),
+    tables = list(
+      costMatrix = mcx_plain_table(res$cost.matrix)
+    )
+  )
+}
+
+mcx_analysis_allocation <- function(surface, origin, params) {
+  args <- list(surface = surface, origin = origin, time = mcx_time_unit(params))
+  breaks <- mcx_numeric(params, "breaks")
+  if (!is.null(breaks)) args$breaks <- breaks[1]
+  res <- mcx_call(movecost::mc_alloc, args)
+
+  list(
+    vectors = list(
+      boundaries = mcx_sf_to_geojson(res$zones),
+      isolines = if (isTRUE(mcx_pick(params, "isolines", FALSE))) {
+        mcx_sf_to_geojson(res$isolines)
       } else {
         NULL
       }
+    ),
+    rasters = list(
+      allocation = mcx_raster_payload(res$alloc, "cost_allocation")
     )
   )
 }
 
-mcx_analysis_corridor <- function(terrain, a, b, barrier, params) {
-  args <- c(
-    terrain,
-    list(
-      a = a, b = b, barrier = barrier,
-      field = as.numeric(mcx_pick(params, "field", 0)),
-      irregular.dtm = isTRUE(mcx_pick(params, "irregularDtm", FALSE)),
-      rescale = isTRUE(mcx_pick(params, "rescale", FALSE)),
-      graph.out = FALSE, export = FALSE
-    ),
-    mcx_common_args(params)
-  )
-  if (mcx_is_time_function(args$funct)) args$time <- mcx_pick(params, "time", "h")
-
-  res <- mcx_call(movecost::movecorr, args)
-
-  list(
-    vectors = list(
-      lcpAtoB = mcx_sf_to_geojson(res$lcp_a_to_b),
-      lcpBtoA = mcx_sf_to_geojson(res$lcp_b_to_a)
-    ),
-    rasters = list(
-      corridor = mcx_raster_payload(res$lc.corridor, "least_cost_corridor")
-    )
-  )
-}
-
-mcx_analysis_network <- function(terrain, origin, barrier, params) {
-  args <- c(
-    terrain,
-    list(
-      origin = origin, barrier = barrier,
-      netw.type = mcx_pick(params, "netwType", "allpairs"),
-      field = as.numeric(mcx_pick(params, "field", 0)),
-      irregular.dtm = isTRUE(mcx_pick(params, "irregularDtm", FALSE)),
-      lcp.dens = isTRUE(mcx_pick(params, "lcpDensity", FALSE)),
-      export = FALSE
-    ),
-    mcx_common_args(params)
-  )
-
-  res <- mcx_call(movecost::movenetw, args)
-
-  merged <- res$LCPs.netw.merged
-  if (is.null(merged)) merged <- res$LCPs.netw.neigh.merged
+mcx_analysis_boundary <- function(surface, origin, params) {
+  limits <- mcx_numeric(params, "contValue")
+  if (is.null(limits)) {
+    mcx_stop("The boundary analysis needs at least one cost limit.")
+  }
+  time <- mcx_time_unit(params)
+  # mc_boundary() takes one limit per call. Several are still worth offering —
+  # the one-hour and the two-hour walk on the same map — and with the graph
+  # already built each extra limit costs only its own pass over it.
+  parts <- lapply(limits, function(limit) {
+    mcx_call(movecost::mc_boundary, list(
+      surface = surface, origin = origin, limit = limit, time = time
+    ))
+  })
+  boundaries <- do.call(rbind, lapply(parts, function(p) p$boundaries))
 
   list(
     vectors = list(
-      network = mcx_sf_to_geojson(merged)
+      boundaries = mcx_sf_to_geojson(boundaries)
     ),
     rasters = list(
-      density = mcx_raster_payload(res$LCPs.density.perc, "lcp_density_percent")
+      accumulated = mcx_raster_payload(parts[[1]]$accum, "accumulated_cost")
     ),
     tables = list(
-      costMatrixHours   = if (!is.null(res$cost.matrix.hr)) as.data.frame(res$cost.matrix.hr) else NULL,
-      costMatrixMinutes = if (!is.null(res$cost.matrix.min)) as.data.frame(res$cost.matrix.min) else NULL,
-      costMatrix        = if (!is.null(res$cost.matrix)) as.data.frame(res$cost.matrix) else NULL
+      boundaries = mcx_plain_table(
+        if (!is.null(boundaries)) sf::st_drop_geometry(boundaries) else NULL
+      )
     )
   )
 }
 
-mcx_analysis_allocation <- function(terrain, origin, params) {
-  args <- c(
-    terrain,
-    list(
-      origin = origin,
-      isolines = isTRUE(mcx_pick(params, "isolines", FALSE)),
-      export = FALSE
-    ),
-    mcx_common_args(params)
-  )
-  args$field <- NULL # movealloc has no `field` argument
-  if (mcx_is_time_function(args$funct)) args$time <- mcx_pick(params, "time", "h")
-  breaks <- mcx_pick(params, "breaks", NULL)
-  if (!is.null(breaks) && length(breaks)) args$breaks <- as.numeric(breaks)
-
-  res <- mcx_call(movecost::movealloc, args)
+mcx_analysis_rank <- function(surface, origin, destin, params) {
+  res <- mcx_call(movecost::mc_rank, list(
+    surface = surface, origin = origin, destin = destin,
+    k = as.integer(mcx_pick(params, "lcpN", 3)),
+    penalty = as.numeric(mcx_pick(params, "penalty", 0.01)),
+    time = mcx_time_unit(params)
+  ))
 
   list(
     vectors = list(
-      boundaries = mcx_sf_to_geojson(res$alloc.boundaries),
-      isolines   = mcx_sf_to_geojson(res$isolines)
+      rankedPaths = mcx_sf_to_geojson(res$paths)
     ),
     rasters = list(
-      allocation = mcx_raster_payload(res$cost.allocation.raster, "cost_allocation")
-    )
-  )
-}
-
-mcx_analysis_boundary <- function(terrain, origin, barrier, params) {
-  cont <- mcx_pick(params, "contValue", NULL)
-  if (is.null(cont) || !length(cont)) {
-    mcx_stop("The boundary analysis needs at least one cost limit (cont.value).")
-  }
-  args <- c(
-    terrain,
-    list(
-      origin = origin, barrier = barrier,
-      cont.value = as.numeric(cont),
-      field = as.numeric(mcx_pick(params, "field", 0)),
-      add.geom = TRUE,
-      export = FALSE
+      corridor = mcx_raster_payload(res$corridor, "least_cost_corridor")
     ),
-    mcx_common_args(params)
-  )
-  if (mcx_is_time_function(args$funct)) args$time <- mcx_pick(params, "time", "h")
-
-  res <- mcx_call(movecost::movebound, args)
-
-  list(
-    vectors = list(
-      isolines = mcx_sf_to_geojson(res$isolines),
-      origins  = mcx_sf_to_geojson(res$origin_w_isolines_geom)
-    ),
-    rasters = list()
-  )
-}
-
-mcx_analysis_rank <- function(terrain, origin, destin, barrier, params) {
-  args <- c(
-    terrain,
-    list(
-      origin = origin, destin = destin, barrier = barrier,
-      lcp.n = as.integer(mcx_pick(params, "lcpN", 3)),
-      irregular.dtm = isTRUE(mcx_pick(params, "irregularDtm", FALSE)),
-      use.corr = isTRUE(mcx_pick(params, "useCorridor", FALSE)),
-      export = FALSE
-    ),
-    mcx_common_args(params)
-  )
-  args$field <- NULL # moverank has no `field` argument
-  if (mcx_is_time_function(args$funct)) args$time <- mcx_pick(params, "time", "h")
-
-  res <- mcx_call(movecost::moverank, args)
-
-  list(
-    vectors = list(
-      rankedPaths = mcx_sf_to_geojson(res$LCPs)
-    ),
-    rasters = list(
-      corridor = mcx_raster_payload(res$lc.corr, "least_cost_corridor")
+    tables = list(
+      paths = mcx_plain_table(
+        if (!is.null(res$paths)) sf::st_drop_geometry(res$paths) else NULL
+      )
     )
   )
 }
@@ -665,6 +733,9 @@ mcx_grid_to_dtm <- function(request_path, response_path = NULL) {
         # to the latest handle.
         mcx_env$dtms <- list()
         mcx_env$dtms[[keep_as]] <- r
+        # A new DTM invalidates the cached cost graph, and holding both at once
+        # is exactly what exhausts the wasm heap.
+        mcx_forget_surface()
         out_bytes <- 0
         out_path <- NULL
       } else {
@@ -785,19 +856,25 @@ mcx_run <- function(request_path, response_path = NULL) {
 
       # Terrain arrives one of two ways: a DTM the caller supplies, or a study
       # area that movecost itself resolves into elevation through elevatr. The
-      # second is movecost's own documented path (`studyplot` + `z`), so it is
-      # passed straight through rather than reimplemented here.
+      # second is mc_surface()'s own documented path (`studyplot` + `z`), so it
+      # is passed straight through rather than reimplemented here.
       dtm_rast <- mcx_resolve_dtm(
         req,
         reproject = !identical(mcx_pick(params, "autoReproject", TRUE), FALSE)
       )
-      has_dtm <- !is.null(dtm_rast)
 
-      if (has_dtm) {
+      if (!is.null(dtm_rast)) {
         target_crs <- sf::st_crs(terra::crs(dtm_rast))
         mcx_env$target_crs <- target_crs
-        # movecost 2.x is built on raster/sp, so hand it a RasterLayer.
-        terrain <- list(dtm = raster::raster(dtm_rast))
+        # movecost 3.0 takes a SpatRaster directly; the raster/sp round-trip
+        # the 2.x engine needed is gone.
+        source <- list(
+          dtm = dtm_rast,
+          key = paste0(
+            "dtm:", mcx_pick(req, "dtmHandle", ""), ":", mcx_pick(req, "dtmPath", ""),
+            ":", terra::ncol(dtm_rast), "x", terra::nrow(dtm_rast)
+          )
+        )
       } else {
         if (is.null(req$studyplotPath) || !file.exists(req$studyplotPath)) {
           mcx_stop("Supply either a DTM or a study area to download elevation for.")
@@ -819,45 +896,46 @@ mcx_run <- function(request_path, response_path = NULL) {
         if (is.na(zoom) || zoom < 1 || zoom > 14) mcx_stop("Zoom level must be between 1 and 14.")
         mcx_log("No DTM supplied; movecost will download elevation at zoom ", zoom,
                 " in EPSG:", epsg)
-        terrain <- list(
+        source <- list(
           dtm = NULL,
-          studyplot = mcx_as_spatial(sf::st_transform(plot_sf, target_crs)),
-          z = zoom
+          studyplot = sf::st_transform(plot_sf, target_crs),
+          zoom = zoom,
+          key = paste0("area:", req$studyplotPath, ":", zoom, ":", epsg)
         )
       }
 
-      origin_sf  <- mcx_read_vector(req$originPath, target_crs, "Origin")
-      destin_sf  <- mcx_read_vector(req$destinPath, target_crs, "Destination")
+      origin_sf  <- mcx_ensure_id(mcx_read_vector(req$originPath, target_crs, "Origin"))
+      destin_sf  <- mcx_ensure_id(mcx_read_vector(req$destinPath, target_crs, "Destination"))
       barrier_sf <- mcx_read_vector(req$barrierPath, target_crs, "Barrier")
 
-      origin  <- mcx_as_spatial(origin_sf)
-      destin  <- mcx_as_spatial(destin_sf)
-      barrier <- mcx_as_spatial(barrier_sf)
+      if (is.null(origin_sf)) mcx_stop("Every analysis needs at least one origin point.")
 
-      if (is.null(origin)) mcx_stop("Every analysis needs at least one origin point.")
+      # Checked before the surface is built: a missing destination should not
+      # cost the user a full graph construction first.
+      switch(analysis,
+        paths = if (is.null(destin_sf)) mcx_stop("The least-cost path analysis needs destination points."),
+        corridor = if (is.null(destin_sf)) mcx_stop("The corridor analysis needs a second location."),
+        rank = if (is.null(destin_sf)) mcx_stop("The ranking analysis needs a destination point."),
+        network = if (nrow(origin_sf) < 2) mcx_stop("The network analysis needs at least two locations."),
+        allocation = if (nrow(origin_sf) < 2) mcx_stop("The allocation analysis needs at least two origins."),
+        boundary = invisible(NULL),
+        mcx_stop("Unknown analysis: ", analysis)
+      )
+
+      # Barriers now belong to the surface rather than to each analysis, so
+      # every analysis honours them — including allocation and ranking, which
+      # movecost 2.x could not.
+      barrier_key <- paste0("barrier:", mcx_pick(req, "barrierPath", ""),
+                            ":", as.numeric(mcx_pick(params, "field", 0)))
+      surface <- mcx_build_surface(source, barrier_sf, barrier_key, params)
 
       result <- switch(analysis,
-        paths = {
-          if (is.null(destin)) mcx_stop("The least-cost path analysis needs destination points.")
-          mcx_analysis_paths(terrain, origin, destin, barrier, params)
-        },
-        corridor = {
-          if (is.null(destin)) mcx_stop("The corridor analysis needs a second location.")
-          mcx_analysis_corridor(terrain, origin, destin, barrier, params)
-        },
-        network = {
-          if (nrow(origin_sf) < 2) mcx_stop("The network analysis needs at least two locations.")
-          mcx_analysis_network(terrain, origin, barrier, params)
-        },
-        allocation = {
-          if (nrow(origin_sf) < 2) mcx_stop("The allocation analysis needs at least two origins.")
-          mcx_analysis_allocation(terrain, origin, params)
-        },
-        boundary = mcx_analysis_boundary(terrain, origin, barrier, params),
-        rank = {
-          if (is.null(destin)) mcx_stop("The ranking analysis needs a destination point.")
-          mcx_analysis_rank(terrain, origin, destin, barrier, params)
-        },
+        paths = mcx_analysis_paths(surface, origin_sf, destin_sf, params),
+        corridor = mcx_analysis_corridor(surface, origin_sf, destin_sf, params),
+        network = mcx_analysis_network(surface, origin_sf, params),
+        allocation = mcx_analysis_allocation(surface, origin_sf, params),
+        boundary = mcx_analysis_boundary(surface, origin_sf, params),
+        rank = mcx_analysis_rank(surface, origin_sf, destin_sf, params),
         mcx_stop("Unknown analysis: ", analysis)
       )
 

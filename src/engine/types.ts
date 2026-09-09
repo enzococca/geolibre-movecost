@@ -15,7 +15,7 @@ export interface AnalysisParams {
   time?: "h" | "m";
   /** Neighbourhood used to build the transition matrix. */
   move?: 4 | 8 | 16;
-  /** Conductance value assigned to barrier cells. */
+  /** Conductance multiplier applied to edges touching a barrier. */
   field?: number;
   cognSlope?: boolean;
   topoDist?: boolean;
@@ -29,15 +29,16 @@ export interface AnalysisParams {
   N?: number;
   /** Speed in m/s (Pandolf, Van Leusen, Ardigo). */
   V?: number;
-  irregularDtm?: boolean;
   autoReproject?: boolean;
   /** elevatr zoom level, used only when movecost downloads the terrain itself. */
   zoom?: number;
 
+  /** paths, allocation: isoline interval; 0 or absent lets movecost choose. */
+  breaks?: number;
   /** paths */
-  breaks?: number[];
   returnBase?: boolean;
   /** corridor */
+  corridorMethod?: "reach" | "through";
   rescale?: boolean;
   /** network */
   netwType?: "allpairs" | "neigh";
@@ -48,7 +49,7 @@ export interface AnalysisParams {
   contValue?: number[];
   /** rank */
   lcpN?: number;
-  useCorridor?: boolean;
+  penalty?: number;
 }
 
 export interface EngineRequest {

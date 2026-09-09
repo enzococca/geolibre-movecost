@@ -36,8 +36,8 @@ got. Either way the analysis stays on the machine: nothing is uploaded anywhere.
               ▼                           ├── write inputs to the VFS
    ┌── plumber on 127.0.0.1 ──┐           └── source + call mcx_run()
    │  R 4.6 (native)          │                        │
-   │  movecost 2.2, terra,    │                        ▼
-   │  sf, raster, gdistance   │            ┌─── webR worker ────┐
+   │  movecost 3.0, terra,    │                        ▼
+   │  sf, igraph              │            ┌─── webR worker ────┐
    │  movecost-engine.R       │            │  same engine.R      │
    └──────────────────────────┘            └─────────────────────┘
 ```
@@ -132,10 +132,13 @@ The engine reprojects a geographic DTM to the UTM zone of its own centroid
 (`mcx_prepare_dtm`), transforms every input layer into that CRS, and transforms
 results back to EPSG:4326 on the way out.
 
-`movecost` 2.x returns `sp` objects built on `raster`; round-tripping them
-through `sf` sometimes loses the CRS, so both `mcx_sf_to_geojson()` and
-`mcx_raster_payload()` restore the analysis CRS as a fallback before
-reprojecting. Without that every result comes back as "missing crs".
+`movecost` 3.0 takes and returns `sf` and `terra` objects directly, so nothing
+is coerced to `sp` any more. The CRS can still go missing on a round trip, so
+`mcx_sf_to_geojson()` and `mcx_raster_payload()` keep restoring the analysis CRS
+as a fallback before reprojecting. Measured columns — boundary areas, path
+lengths — arrive as `units` objects, which `jsonlite` cannot serialise;
+`mcx_plain_table()` strips the class and the number travels plain, with the unit
+documented rather than encoded.
 
 ## Why the results are added the way they are
 
@@ -193,33 +196,60 @@ No `getMap()` also means no click-to-place; without the registry the markers
 are plain circle layers on the map and the vectors go through
 `addGeoJsonLayer`.
 
-## movecost 2.x vs 3.x
+## The cost surface, and why it is built once
 
-CRAN carries **movecost 3.0.0** (published 2026-06-15); the plugin runs **2.2**
-on both paths. Checked 2026-09-09: `repo.r-wasm.org` (R 4.6) still builds 2.2,
-and the local R service pins 2.2 too.
+movecost 3.0 (CRAN, 2026-06-15) is a redesign rather than an update.
+`mc_surface()` turns the DTM into a directed igraph of per-cell movement costs,
+and every analysis reads that graph: `mc_accum`, `mc_paths`, `mc_corridor`,
+`mc_boundary`, `mc_alloc`, `mc_network`, `mc_rank`. In 2.x each of those
+functions rebuilt the conductance matrix from scratch, so a network between n
+sites meant n or more redundant constructions.
 
-3.0.0 is a redesign rather than an update. `mc_surface()` builds the cost graph
-once and every analysis reuses it (`mc_accum`, `mc_paths`, `mc_corridor`,
-`mc_boundary`, `mc_alloc`, `mc_network`, `mc_rank`), multi-origin work goes
-through batched igraph Dijkstra queries, the stack moves to terra + sf + igraph
-(raster, sp, gdistance, chron and the hard elevatr dependency are gone), and
-plotting is decoupled into ggplot2 methods. The 26 cost functions are
-unchanged. The 2.x entry points — `movecost()`, `movecorr()`, `movealloc()`,
-`movebound()`, `movenetw()`, `moverank()` — survive only as **defunct stubs**
-that raise an error naming their replacement, so an engine written for 2.x does
-not misbehave on 3.0.0: it stops. `mcx_require()` checks the version and says
-so before anything else runs, and the install instructions pin 2.2
-(`remotes::install_version("movecost", "2.2")`) — `install.packages("movecost")`
-would otherwise fetch 3.0.0 and break the service.
+The engine follows that shape. `mcx_build_surface()` keeps the graph in
+`mcx_env$surface` under a signature made of the DTM identity, the barrier and
+every cost-function parameter; a run whose signature matches reuses it and logs
+that it did. Only one surface is ever held — inside webR the graph is the
+largest object in the heap, so the previous one is dropped and collected before
+a new one is built, and downloading a new DTM invalidates it
+(`mcx_forget_surface()`).
 
-Porting is worth doing when it comes up: all four dependencies of 3.0.0 already
-have WebAssembly builds in the upstream repository (igraph 2.3.1, ggplot2
-4.0.3, terra 1.9-27, sf 1.1-1), and movecost itself is pure R
-(`NeedsCompilation: no`), so it can be added to `build/wasm-repo` with the
-same rwasm pipeline as terra. The gain would be real in the browser: four
-packages fewer to download, no gdistance conductance matrix rebuilt per call,
-and batched queries for the multi-origin analyses that are slowest today.
+What this buys, on the same terrain and cost function: a second destination, a
+second cost limit, or switching a corridor from "reach" to "through" costs a
+Dijkstra pass instead of a rebuild. The native suite shows the reuse directly —
+`scripts/test-engine.R` fails if a run that changed nothing structural
+rebuilds the graph.
 
-The change is contained in the `mcx_analysis_*()` functions: the
-request/response contract and the whole TypeScript side stay as they are.
+Three consequences follow through the rest of the plugin:
+
+* **Barriers belong to the surface**, not to each analysis, so every analysis
+  honours them — including allocation and ranking, which movecost 2.x could
+  not.
+* **`mc_boundary()` takes one cost limit per call.** The panel still offers a
+  list of them, and the engine loops: with the graph already built, each extra
+  limit costs only its own pass. Boundaries come back as polygons with `area`
+  and `perimeter`, where 2.x returned lines.
+* **The dependency list changed**: terra + sf + igraph + ggplot2 in, and
+  raster, sp, gdistance and chron out. ggplot2 is there because movecost
+  imports it for its plot methods; the engine never calls them, since 3.0
+  finally separates computing from drawing.
+
+## movecost for WebAssembly
+
+`repo.r-wasm.org` still builds movecost 2.2, so the plugin ships 3.0.0 in its
+own `build/wasm-repo`, consulted before upstream (`src/config.ts`).
+
+It does not need the rwasm container that terra needs.
+`scripts/build-movecost-wasm.R` installs the CRAN source with a normal R 4.6 —
+movecost is `NeedsCompilation: no`, so nothing is compiled and R's lazy-load
+databases are portable across platforms and word sizes — restamps the `Built:`
+metadata in `DESCRIPTION` and `Meta/package.rds` as
+`wasm32-unknown-emscripten`, writes the `.tgz` next to the rebuilt terra and
+regenerates the index. The script refuses to run if a future movecost gains
+compiled code, which is exactly when the shortcut would stop being sound.
+
+`scripts/test-wasm-install.mjs` is the check that matters: it serves
+`build/wasm-repo` over HTTP, installs the whole stack into webR under Node
+against that repository plus upstream, and runs `mc_surface()` and `mc_paths()`
+on a synthetic DTM. Verified 2026-09-09 with movecost 3.0.0, terra 1.9.46,
+sf 1.1.1, igraph 2.3.1 and ggplot2 4.0.3.
+

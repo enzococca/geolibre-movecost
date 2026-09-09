@@ -25,7 +25,7 @@ export interface AnalysisSpec {
 
 export type ExtraField =
   | { kind: "select"; key: string; label: string; options: { value: string; label: string }[]; hint?: string }
-  | { kind: "number"; key: string; label: string; min?: number; max?: number; step?: number; hint?: string }
+  | { kind: "number"; key: string; label: string; min?: number; max?: number; step?: number; defaultValue?: number; hint?: string }
   | { kind: "numberList"; key: string; label: string; hint?: string }
   | { kind: "boolean"; key: string; label: string; hint?: string };
 
@@ -35,16 +35,18 @@ export const ANALYSES: AnalysisSpec[] = [
     label: "Least-cost paths",
     description:
       "Accumulated cost surface around the origin, plus the least-cost path to each destination and the isolines of equal cost.",
-    rFunction: "movecost()",
+    rFunction: "mc_surface() + mc_paths() + mc_accum()",
     origin: { label: "Origin", min: 1, max: 1 },
     destination: { label: "Destinations", min: 1 },
     supportsBarrier: true,
     extras: [
       {
-        kind: "numberList",
+        kind: "number",
         key: "breaks",
-        label: "Isoline values",
-        hint: "Comma-separated, in the cost unit of the chosen function. Leave empty to let movecost choose.",
+        label: "Isoline interval",
+        min: 0,
+        step: 0.05,
+        hint: "In the cost unit of the chosen function. Leave at 0 to let movecost use a tenth of the range.",
       },
       {
         kind: "boolean",
@@ -67,11 +69,21 @@ export const ANALYSES: AnalysisSpec[] = [
     label: "Least-cost corridor",
     description:
       "The band of terrain whose combined cost from both locations stays low — where movement plausibly happened, rather than one idealised line.",
-    rFunction: "movecorr()",
+    rFunction: "mc_surface() + mc_corridor()",
     origin: { label: "Location A", min: 1, max: 1 },
     destination: { label: "Location B", min: 1, max: 1 },
     supportsBarrier: true,
     extras: [
+      {
+        kind: "select",
+        key: "corridorMethod",
+        label: "Formulation",
+        options: [
+          { value: "reach", label: "Reach — symmetric, both directions summed" },
+          { value: "through", label: "Through — the A → B near-optimal band" },
+        ],
+        hint: "\"Reach\" is the classic corridor; \"through\" keeps only routes that actually go from A to B.",
+      },
       {
         kind: "boolean",
         key: "rescale",
@@ -90,7 +102,7 @@ export const ANALYSES: AnalysisSpec[] = [
     label: "Least-cost network",
     description:
       "Paths between a set of locations — all pairs, or only neighbours — with the cost matrix between them.",
-    rFunction: "movenetw()",
+    rFunction: "mc_surface() + mc_network()",
     origin: { label: "Locations", min: 2 },
     destination: null,
     supportsBarrier: true,
@@ -113,6 +125,7 @@ export const ANALYSES: AnalysisSpec[] = [
     ],
     layers: {
       network: { label: "Network paths", kind: "line" },
+      nodes: { label: "Locations (numbered)", kind: "point" },
       density: { label: "Path density (%)", kind: "raster" },
     },
   },
@@ -121,10 +134,10 @@ export const ANALYSES: AnalysisSpec[] = [
     label: "Cost allocation",
     description:
       "Assigns every cell to its cheapest origin — the cost-distance equivalent of Thiessen polygons, and a common first pass at territories.",
-    rFunction: "movealloc()",
+    rFunction: "mc_surface() + mc_alloc()",
     origin: { label: "Origins", min: 2 },
     destination: null,
-    supportsBarrier: false,
+    supportsBarrier: true,
     extras: [
       {
         kind: "boolean",
@@ -132,10 +145,12 @@ export const ANALYSES: AnalysisSpec[] = [
         label: "Also draw cost isolines",
       },
       {
-        kind: "numberList",
+        kind: "number",
         key: "breaks",
-        label: "Isoline values",
-        hint: "Only used when isolines are enabled.",
+        label: "Isoline interval",
+        min: 0,
+        step: 0.05,
+        hint: "Only used when isolines are enabled. Leave at 0 for a tenth of the range.",
       },
     ],
     layers: {
@@ -148,8 +163,8 @@ export const ANALYSES: AnalysisSpec[] = [
     id: "boundary",
     label: "Cost boundaries (isochrones)",
     description:
-      "The limit reachable from each origin within a given cost — an hour's walk, say — returned as a closed line with its area.",
-    rFunction: "movebound()",
+      "The area reachable from each origin within a given cost — an hour's walk, say — returned as a polygon with its area and perimeter.",
+    rFunction: "mc_surface() + mc_boundary()",
     origin: { label: "Origins", min: 1 },
     destination: null,
     supportsBarrier: true,
@@ -162,8 +177,8 @@ export const ANALYSES: AnalysisSpec[] = [
       },
     ],
     layers: {
-      isolines: { label: "Cost boundaries", kind: "line" },
-      origins: { label: "Origins with area", kind: "point" },
+      boundaries: { label: "Cost boundaries", kind: "polygon" },
+      accumulated: { label: "Accumulated cost", kind: "raster" },
     },
   },
   {
@@ -171,7 +186,7 @@ export const ANALYSES: AnalysisSpec[] = [
     label: "Ranked alternative paths",
     description:
       "Several plausible routes between two points, ranked from optimal to sub-optimal — useful when the single best path is an artefact of the DTM.",
-    rFunction: "moverank()",
+    rFunction: "mc_surface() + mc_rank()",
     origin: { label: "Origin", min: 1, max: 1 },
     destination: { label: "Destination", min: 1, max: 1 },
     supportsBarrier: true,
@@ -181,14 +196,20 @@ export const ANALYSES: AnalysisSpec[] = [
         key: "lcpN",
         label: "Number of paths",
         min: 2,
-        max: 6,
+        max: 8,
         step: 1,
-        hint: "movecost ranks up to six alternatives.",
+        defaultValue: 3,
+        hint: "The optimal path plus its alternatives.",
       },
       {
-        kind: "boolean",
-        key: "useCorridor",
-        label: "Also compute the corridor",
+        kind: "number",
+        key: "penalty",
+        label: "Detour penalty",
+        min: 0,
+        max: 1,
+        step: 0.01,
+        defaultValue: 0.01,
+        hint: "How strongly each alternative is pushed away from the paths already found. Lower means further apart.",
       },
     ],
     layers: {

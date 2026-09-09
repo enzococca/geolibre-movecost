@@ -9,22 +9,28 @@ machine (`r-backend/`, **the fast path** for real work), or R itself compiled to
 WebAssembly inside the page, which needs nothing installed and also runs on the
 iPad and Android builds — roughly a hundred times slower, and bounded by the
 browser's memory. The in-browser path needs a rebuilt `terra` (the binary
-published for webR does not load); the plugin fetches it from its own site
-automatically, and `scripts/build-terra-wasm.sh` rebuilds it. The panel probes
+published for webR does not load) and a WebAssembly build of movecost 3.0
+(repo.r-wasm.org still carries 2.2); the plugin fetches both from its own site
+automatically, and `scripts/build-terra-wasm.sh` and
+`scripts/build-movecost-wasm.R` rebuild them. The panel probes
 for the R service when it opens and says which backend it got. See
 [docs/WEBR-FINDINGS.md](docs/WEBR-FINDINGS.md) and
 [docs/TERRA-WASM.md](docs/TERRA-WASM.md).
 
 | Analysis | movecost function | What you get |
 | --- | --- | --- |
-| Least-cost paths | `movecost()` | Accumulated cost surface, paths to each destination, cost isolines |
-| Least-cost corridor | `movecorr()` | The band of terrain where movement between two places is cheap |
-| Least-cost network | `movenetw()` | Paths between many locations, all pairs or neighbours, plus a cost matrix |
-| Cost allocation | `movealloc()` | Territories: every cell assigned to its cheapest origin |
-| Cost boundaries | `movebound()` | Isochrones — "one hour's walk from here" — with their areas |
-| Ranked paths | `moverank()` | Several plausible routes, ranked optimal to sub-optimal |
+| Least-cost paths | `mc_paths()` + `mc_accum()` | Accumulated cost surface, paths to each destination, cost isolines |
+| Least-cost corridor | `mc_corridor()` | The band of terrain where movement between two places is cheap, symmetric or A → B |
+| Least-cost network | `mc_network()` | Paths between many locations, all pairs or neighbours, plus a cost matrix |
+| Cost allocation | `mc_alloc()` | Territories: every cell assigned to its cheapest origin |
+| Cost boundaries | `mc_boundary()` | Isochrones — "one hour's walk from here" — as polygons with area and perimeter |
+| Ranked paths | `mc_rank()` | Several plausible routes, ranked optimal to sub-optimal |
 
-All 27 movecost cost functions are available: Tobler and its variants,
+Every analysis reads one cost surface, built once by `mc_surface()` and kept
+between runs: changing only the destinations, the cost limit or the corridor
+formulation re-runs a Dijkstra pass rather than rebuilding the graph.
+
+All 26 movecost cost functions are available: Tobler and its variants,
 Irmischer-Clarke, Márquez-Pérez, Uriarte González, Marín Arroyo, Alberti,
 Rees, Kondo-Seino, Tripcevich, the wheeled-vehicle critical-slope function, the
 abstract-cost functions, and the metabolic ones (Pandolf, Minetti, Herzog,
@@ -42,10 +48,9 @@ GeoLibre build by `scripts/capture-guide.mjs`.
 Once:
 
 ```r
-# movecost 3.0.0 changed its entire API (compute-once `mc_*` functions); this
-# plugin speaks the 2.x one, which is also what the WebAssembly build carries.
-install.packages(c("plumber", "sf", "terra", "raster", "sp", "jsonlite"))
-install.packages("remotes"); remotes::install_version("movecost", "2.2")
+# movecost 3.0.0 or later: the plugin speaks the compute-once `mc_*` API, and
+# the 2.x entry points are defunct stubs there.
+install.packages(c("plumber", "movecost", "sf", "terra", "jsonlite"))
 install.packages(c("elevatr", "progress"))   # for "draw an area and download a DEM"
 ```
 

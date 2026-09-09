@@ -87,13 +87,23 @@ cases <- list(
     expect = c("lcps")
   ),
   list(
-    label = "corridor",
+    label = "corridor (reach)",
     request = list(
       analysis = "corridor", dtmPath = dtm_path,
       originPath = origin_path, destinPath = destin1_path,
       params = list(funct = "t", move = 8)
     ),
     expect = c("lcpAtoB")
+  ),
+  list(
+    label = "corridor (through, reuses surface)",
+    request = list(
+      analysis = "corridor", dtmPath = dtm_path,
+      originPath = origin_path, destinPath = destin1_path,
+      params = list(funct = "t", move = 8, corridorMethod = "through")
+    ),
+    expect = c("lcpAtoB"),
+    reuses_surface = TRUE
   ),
   list(
     label = "network (all pairs)",
@@ -114,20 +124,20 @@ cases <- list(
     expect = c("boundaries")
   ),
   list(
-    label = "boundary (1 h isochrone)",
+    label = "boundary (0.5 h and 1 h)",
     request = list(
       analysis = "boundary", dtmPath = dtm_path,
       originPath = origin_path,
-      params = list(funct = "t", time = "h", move = 8, contValue = 1)
+      params = list(funct = "t", time = "h", move = 8, contValue = c(0.5, 1))
     ),
-    expect = c("isolines")
+    expect = c("boundaries")
   ),
   list(
     label = "rank (3 alternatives)",
     request = list(
       analysis = "rank", dtmPath = dtm_path,
       originPath = origin_path, destinPath = destin1_path,
-      params = list(funct = "t", move = 8, lcpN = 3)
+      params = list(funct = "t", move = 8, lcpN = 3, penalty = 0.01)
     ),
     expect = c("rankedPaths")
   ),
@@ -261,6 +271,16 @@ for (case in cases) {
     if (ok) "" else paste0("  MISSING: ", paste(missing, collapse = ","))
   ))
   if (!ok) failures <- failures + 1
+
+  # movecost 3.0's whole point: a run that changes nothing about the terrain or
+  # the cost function must read the graph the previous run built.
+  if (isTRUE(case$reuses_surface)) {
+    reused <- any(grepl("Reusing the cost surface", unlist(resp$log)))
+    cat(sprintf("[%s] %-38s %s\n", if (reused) "PASS" else "FAIL",
+                "surface reuse across runs",
+                if (reused) "graph reused" else "the graph was rebuilt"))
+    if (!reused) failures <- failures + 1
+  }
 
   # Validate the raster payload round-trips as Float32.
   for (rp in resp$result$rasters) {
