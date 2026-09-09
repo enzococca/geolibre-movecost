@@ -2433,6 +2433,30 @@ mcx_stop <- function(...) stop(paste0(...), call. = FALSE)
 # \`log.join()\` would fail. I() marks it as an array whatever its length.
 mcx_log_out <- function() I(as.character(mcx_env$log))
 
+# The call stack at the moment an error is signalled. tryCatch unwinds it before
+# the handler runs, so the frames have to be captured on the way down. Errors
+# raised by this engine already say what to do; the ones worth a stack are the
+# ones from inside movecost, terra or sf, where the message alone ("nrow
+# dataframe does not match nrow geometry") names no function.
+mcx_env$frames <- character(0)
+
+mcx_watch <- function(expr) {
+  withCallingHandlers(
+    expr,
+    error = function(e) {
+      calls <- sys.calls()
+      named <- vapply(calls, function(cl) {
+        head <- tryCatch(deparse(cl[[1]])[1], error = function(...) "<anonymous>")
+        substr(head, 1, 60)
+      }, character(1))
+      named <- named[!grepl("^(withCallingHandlers|tryCatch|try|doTryCatch|mcx_watch|h|value|force)$", named)]
+      mcx_env$frames <- utils::tail(named, 14)
+    }
+  )
+}
+
+mcx_frames_out <- function() I(as.character(mcx_env$frames))
+
 # --- environment -------------------------------------------------------------
 
 mcx_version <- function() {
@@ -2562,6 +2586,34 @@ mcx_read_vector <- function(path, target_crs, what = "layer") {
 }
 
 # movecost 3.0 takes sf objects directly, so nothing is coerced to sp any more.
+# It does hand them straight to terra::vect(), which is fussier than sf about
+# what a layer may contain, so inputs are tidied first.
+
+#' Drop what terra cannot carry: Z/M dimensions, empty geometries, and columns
+#' that are not plain vectors. A layer drawn in the host can arrive with a list
+#' column (GeoLibre's sketches carry \`__gm_center\`, a coordinate pair per
+#' feature), and terra::vect() on such an sf loses rows and then fails with
+#' "nrow dataframe does not match nrow geometry".
+mcx_tidy_vector <- function(v, what) {
+  if (is.null(v)) {
+    return(NULL)
+  }
+  v <- sf::st_zm(v, drop = TRUE, what = "ZM")
+  empty <- sf::st_is_empty(v)
+  if (any(empty)) {
+    mcx_log("Dropping ", sum(empty), " empty geometr", if (sum(empty) == 1) "y" else "ies",
+            " from the ", what, " layer")
+    v <- v[!empty, , drop = FALSE]
+  }
+  if (!nrow(v)) mcx_stop("The ", what, " layer has no usable geometry.")
+  geom_col <- attr(v, "sf_column")
+  keep <- vapply(sf::st_drop_geometry(v), is.atomic, logical(1))
+  if (!all(keep)) {
+    v <- v[, c(names(keep)[keep], geom_col), drop = FALSE]
+  }
+  v
+}
+
 # The points still need at least one attribute column: it is what the plugin
 # labels them with on the map, and what the costs come back attached to.
 mcx_ensure_id <- function(v) {
@@ -2570,6 +2622,31 @@ mcx_ensure_id <- function(v) {
   }
   keep <- setdiff(names(v), attr(v, "sf_column"))
   if (!length(keep)) v$mcx_id <- seq_len(nrow(v))
+  v
+}
+
+#' A barrier terra can turn into a single SpatVector.
+#'
+#' terra cannot build one from an sf whose features are of mixed geometry type,
+#' and movecost passes the barrier straight to terra::vect(): a layer holding
+#' both a drawn rectangle and a drawn line — which is exactly what a host's
+#' "sketches" layer is — fails with "[as,sf] coercion failed". Buffering by half
+#' a cell turns the linear parts into thin polygons covering the same cells the
+#' lines would have touched, so the layer becomes one type without changing
+#' which cells are blocked.
+mcx_prepare_barrier <- function(v, cell_size) {
+  v <- mcx_tidy_vector(v, "barrier")
+  if (is.null(v)) {
+    return(NULL)
+  }
+  types <- unique(as.character(sf::st_geometry_type(v)))
+  if (length(types) > 1) {
+    dist <- if (is.finite(cell_size) && cell_size > 0) cell_size / 2 else 1
+    mcx_log("Barrier mixes ", paste(types, collapse = " and "),
+            "; buffering by ", round(dist, 1), " m so the parts travel as one layer")
+    v <- sf::st_buffer(v, dist = dist)
+    v <- sf::st_make_valid(v)
+  }
   v
 }
 
@@ -3252,8 +3329,9 @@ mcx_run <- function(request_path, response_path = NULL) {
     response_path <- paste0(tools::file_path_sans_ext(request_path), ".response.json")
   }
 
+  mcx_env$frames <- character(0)
   out <- tryCatch(
-    {
+    mcx_watch({
       mcx_require()
       req <- jsonlite::fromJSON(request_path, simplifyVector = TRUE)
       params <- if (is.null(req$params)) list() else as.list(req$params)
@@ -3310,11 +3388,37 @@ mcx_run <- function(request_path, response_path = NULL) {
         )
       }
 
-      origin_sf  <- mcx_ensure_id(mcx_read_vector(req$originPath, target_crs, "Origin"))
-      destin_sf  <- mcx_ensure_id(mcx_read_vector(req$destinPath, target_crs, "Destination"))
-      barrier_sf <- mcx_read_vector(req$barrierPath, target_crs, "Barrier")
+      cell_size <- if (!is.null(source$dtm)) as.numeric(terra::res(source$dtm))[1] else NA_real_
+      origin_sf  <- mcx_ensure_id(mcx_tidy_vector(
+        mcx_read_vector(req$originPath, target_crs, "Origin"), "origin"))
+      destin_sf  <- mcx_ensure_id(mcx_tidy_vector(
+        mcx_read_vector(req$destinPath, target_crs, "Destination"), "destination"))
+      barrier_sf <- mcx_prepare_barrier(
+        mcx_read_vector(req$barrierPath, target_crs, "Barrier"), cell_size)
 
       if (is.null(origin_sf)) mcx_stop("Every analysis needs at least one origin point.")
+
+      # Written to the log on every run: when something fails on a user's own
+      # layers, the shape of those layers is the first thing worth knowing and
+      # the last thing anyone thinks to ask for.
+      describe <- function(v, name) {
+        if (is.null(v)) {
+          return(NULL)
+        }
+        types <- unique(as.character(sf::st_geometry_type(v)))
+        paste0(name, " ", nrow(v), " x ", paste(types, collapse = "/"),
+               " (", paste(setdiff(names(v), attr(v, "sf_column")), collapse = ", "), ")")
+      }
+      mcx_log(paste(c(
+        if (!is.null(source$dtm)) {
+          paste0("DTM ", terra::ncol(source$dtm), "x", terra::nrow(source$dtm),
+                 " at ", round(as.numeric(terra::res(source$dtm))[1], 1), " m")
+        } else {
+          paste0("study area, zoom ", source$zoom)
+        },
+        describe(origin_sf, "origin"), describe(destin_sf, "destin"),
+        describe(barrier_sf, "barrier")
+      ), collapse = "; "))
 
       # Checked before the surface is built: a missing destination should not
       # cost the user a full graph construction first.
@@ -3357,11 +3461,12 @@ mcx_run <- function(request_path, response_path = NULL) {
         log = mcx_log_out(),
         result = result
       )
-    },
+    }),
     error = function(e) {
       list(
         ok = FALSE,
         error = mcx_memory_hint(conditionMessage(e)),
+        where = mcx_frames_out(),
         log = mcx_log_out(),
         elapsedSeconds = as.numeric(difftime(Sys.time(), started, units = "secs"))
       )
@@ -5030,6 +5135,18 @@ class MovecostPanel {
   /** Layers-panel groups: the DEM at the bottom, the markers on top of everything. */
   terrainGroupId = null;
   locationsGroupId = null;
+  /**
+   * Locations groups this panel made and could not remove afterwards.
+   *
+   * Raising the markers means a fresh group (the host anchors a group where
+   * its first member sits), and the old one should go. Not every host build
+   * honours `removeLayerGroup`, and one that does not leaves an empty group in
+   * the Layers panel on every single run — twenty of them by the end of a
+   * session. After a couple of failures the panel stops making new ones and
+   * reuses the group it has, which costs a little stacking order and keeps the
+   * host's Layers panel readable.
+   */
+  orphanedGroups = [];
   runCount = 0;
   rampId = "viridis";
   rasterOpacity = 0.75;
@@ -5668,6 +5785,22 @@ class MovecostPanel {
     }
     return el("div", { class: "mcx-picker" }, ...children);
   }
+  /**
+   * Drawn features offered as barriers, minus the one already serving as the
+   * study area.
+   *
+   * The rectangle a user drags to say "download the DEM for here" is a drawing
+   * like any other, so taking every drawing as a barrier turns the whole study
+   * area into an obstacle — the analysis then either fails or returns nothing
+   * reachable, and the reason is invisible.
+   */
+  drawingsAsBarriers() {
+    const key = (f2) => String(
+      f2.id ?? f2.properties?.__gm_id ?? JSON.stringify(f2.geometry)
+    );
+    const used = new Set((this.area?.features ?? []).map(key));
+    return keepLinesAndPolygons(readDrawings(this.app)).filter((f2) => !used.has(key(f2)));
+  }
   renderBarrierPicker() {
     const layers = this.candidateLayers();
     const children = [
@@ -5681,7 +5814,7 @@ class MovecostPanel {
     if (this.app.getDrawnFeatures) {
       actions.append(
         button("Use drawings", () => {
-          const features = keepLinesAndPolygons(readDrawings(this.app));
+          const features = this.drawingsAsBarriers();
           this.barrier = { kind: "drawings", label: "drawn features", features };
           this.render();
         })
@@ -6176,18 +6309,28 @@ class MovecostPanel {
   raiseMarkers() {
     if (!this.markers.origin && !this.markers.destination) return;
     const oldGroup = this.locationsGroupId;
-    this.locationsGroupId = null;
+    if (this.orphanedGroups.length < 2) this.locationsGroupId = null;
     for (const which of ["origin", "destination"]) {
       this.markers[which]?.remove();
       this.markers[which] = null;
     }
     this.refreshMarkers("origin");
     this.refreshMarkers("destination");
-    if (oldGroup && oldGroup !== this.locationsGroupId) {
-      try {
-        this.app.removeLayerGroup?.(oldGroup);
-      } catch {
-      }
+    if (oldGroup && oldGroup !== this.locationsGroupId) this.orphanedGroups.push(oldGroup);
+    this.orphanedGroups = this.orphanedGroups.filter((id) => !this.removeGroup(id));
+  }
+  /** True when the host actually removed the group. */
+  removeGroup(id) {
+    if (typeof this.app.removeLayerGroup !== "function") return false;
+    try {
+      this.app.removeLayerGroup(id);
+    } catch {
+      return false;
+    }
+    try {
+      return !this.app.listLayers?.().some((l2) => l2.groupId === id);
+    } catch {
+      return true;
     }
   }
   clearMarkers() {
