@@ -1336,11 +1336,16 @@ export class MovecostPanel {
       }
     }
 
-    if (response.log?.length) {
+    const logLines = Array.isArray(response.log)
+      ? response.log
+      : response.log
+        ? [String(response.log)]
+        : [];
+    if (logLines.length) {
       children.push(
         el("details", { class: "mcx-table" },
           el("summary", { text: "Engine log" }),
-          el("pre", { class: "mcx-pre", text: response.log.join("\n") }),
+          el("pre", { class: "mcx-pre", text: logLines.join("\n") }),
         ),
       );
     }

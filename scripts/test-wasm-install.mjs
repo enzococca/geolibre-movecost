@@ -18,6 +18,9 @@ import { WebR } from "webr";
 
 const REPO_DIR = new URL("../build/wasm-repo/", import.meta.url).pathname;
 const UPSTREAM = "https://repo.r-wasm.org";
+// By default the freshly built repository is served from disk; pass a URL (the
+// published one, say) to check the repository users actually install from.
+const PUBLISHED = process.argv[2] ?? process.env.MCX_WASM_REPO ?? null;
 const PACKAGES = ["terra", "sf", "igraph", "ggplot2", "jsonlite", "movecost"];
 
 const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
@@ -34,15 +37,15 @@ const server = createServer(async (req, res) => {
   }
 });
 await new Promise((r) => server.listen(0, "127.0.0.1", r));
-const local = `http://127.0.0.1:${server.address().port}`;
-log("serving build/wasm-repo at", local);
+const primary = PUBLISHED ?? `http://127.0.0.1:${server.address().port}`;
+log(PUBLISHED ? `installing from ${PUBLISHED}` : `serving build/wasm-repo at ${primary}`);
 
 const webR = new WebR({ interactive: false });
 await webR.init();
 log("webR up:", (await webR.evalRString("R.version.string")));
 
 log("installing", PACKAGES.join(", "), "— this fetches tens of megabytes");
-await webR.installPackages(PACKAGES, { repos: [local, UPSTREAM], quiet: false });
+await webR.installPackages(PACKAGES, { repos: [primary, UPSTREAM], quiet: false });
 
 const versions = await webR.evalRString(`
   paste(vapply(c("movecost", "terra", "sf", "igraph", "ggplot2"),

@@ -194,6 +194,24 @@ Rscript scripts/test-engine.R
 It builds a synthetic DTM, exercises every analysis, checks the raster payloads
 round-trip as `Float32`, and exits non-zero on failure.
 
+```bash
+Rscript scripts/test-matrix.R
+```
+
+is the thorough one: every analysis twice, without a barrier and with a wall
+between origin and destination, asserting that the barrier actually diverts the
+paths; all 26 cost functions; the movement neighbourhoods, both time units,
+cognitive slope and topographic distance; and the surface cache — that the same
+settings reuse the graph and changed ones rebuild it.
+
+```bash
+node scripts/test-wasm-install.mjs [repository-url]
+```
+
+installs the whole R stack into webR under Node — from `build/wasm-repo` by
+default, or from the published repository if you give its URL — and runs the
+engine there, which is the check that the browser path works.
+
 > On macOS with the CRAN build of R, set `PROJ_LIB` first if you see
 > "Cannot find proj.db":
 > `export PROJ_LIB=/Library/Frameworks/R.framework/Resources/library/sf/proj`

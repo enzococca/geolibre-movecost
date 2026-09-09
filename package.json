@@ -15,6 +15,7 @@
     "serve:demo": "vite --config vite.demo.config.ts",
     "test:engine": "Rscript scripts/test-engine.R",
     "test:host": "node scripts/test-host-layers.mjs",
+    "test:matrix": "Rscript scripts/test-matrix.R",
     "test:wasm": "node scripts/test-wasm-install.mjs",
     "build:movecost-wasm": "Rscript scripts/build-movecost-wasm.R"
   },

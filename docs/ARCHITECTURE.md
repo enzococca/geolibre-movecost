@@ -140,6 +140,11 @@ lengths — arrive as `units` objects, which `jsonlite` cannot serialise;
 `mcx_plain_table()` strips the class and the number travels plain, with the unit
 documented rather than encoded.
 
+`log` is written through `mcx_log_out()`, which wraps it in `I()`. Without that,
+`jsonlite`'s `auto_unbox` turns a one-line log into a bare string and the
+panel's `log.join()` throws — and one line is exactly what a cached-surface run
+produces, so the port made a latent bug the common case.
+
 ## Why the results are added the way they are
 
 Every layer the plugin draws — terrain, origin / destination markers, result
@@ -228,6 +233,13 @@ Three consequences follow through the rest of the plugin:
   list of them, and the engine loops: with the graph already built, each extra
   limit costs only its own pass. Boundaries come back as polygons with `area`
   and `perimeter`, where 2.x returned lines.
+* **A barrier is rasterised by the cells it falls in**, so a line laid exactly
+  along the DTM's own grid lines touches almost none of them. On an 80x80 grid
+  of 50 m cells, a wall on a row boundary removed 16 graph edges and blocked
+  nothing; the same wall 25 m higher removed about 950 and raised the crossing
+  cost by a fifth. This is movecost's behaviour, not the plugin's, and it only
+  bites fixtures with round coordinates — but it is why
+  `scripts/test-matrix.R` puts its wall through the middle of a row.
 * **The dependency list changed**: terra + sf + igraph + ggplot2 in, and
   raster, sp, gdistance and chron out. ggplot2 is there because movecost
   imports it for its plot methods; the engine never calls them, since 3.0
