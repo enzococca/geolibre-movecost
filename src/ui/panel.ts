@@ -326,12 +326,46 @@ export class MovecostPanel {
     this.container = container;
     container.classList.add("mcx-panel");
     this.render();
+    this.watchLayers();
     return () => this.unmount();
   }
 
   private unmount(): void {
     this.cancelPicking();
     this.container = null;
+    if (this.layerWatch !== null) {
+      clearInterval(this.layerWatch);
+      this.layerWatch = null;
+    }
+  }
+
+  /**
+   * The host has no "layers changed" event for plugins, and the layer lists in
+   * the pickers are built at render time — so a layer added after the panel
+   * opened would never be offered. A cheap poll of `listLayers()` re-renders
+   * the panel when the set of layers changes (and only then, so nothing the
+   * user is typing gets rebuilt under them).
+   */
+  private layerWatch: ReturnType<typeof setInterval> | null = null;
+  private layerSignature = "";
+
+  private watchLayers(): void {
+    if (this.layerWatch !== null || !this.app.listLayers) return;
+    this.layerSignature = this.layersSignature();
+    this.layerWatch = setInterval(() => {
+      if (!this.container || this.busy) return;
+      const signature = this.layersSignature();
+      if (signature !== this.layerSignature) {
+        this.layerSignature = signature;
+        this.render();
+      }
+    }, 1500);
+  }
+
+  private layersSignature(): string {
+    return listVectorLayers(this.app)
+      .map((layer) => `${layer.id}:${layer.name ?? ""}`)
+      .join("|");
   }
 
   /**

@@ -107,6 +107,8 @@ await shot("03-study-area");
 
 // --- 3. Terrain: current view, DEM download ---------------------------------
 // The study area from its layer (the terrain section's own layer select).
+// The panel re-renders its layer lists a moment after layers change.
+await page.waitForTimeout(3000);
 await page.evaluate(() => {
   for (const select of document.querySelectorAll("select")) {
     const option = [...select.options].find((o) => /vesuvius/i.test(o.textContent));
