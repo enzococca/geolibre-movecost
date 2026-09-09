@@ -3116,13 +3116,12 @@ mcx_run <- function(request_path, response_path = NULL) {
 }
 `;
 const WEBR_VERSION = "0.6.0";
-const WEBR_BASE_URL = readOverride$1("MOVECOST_WEBR_BASE_URL") ?? `https://webr.r-wasm.org/v${WEBR_VERSION}/`;
+const WEBR_BASE_URL = readOverride$1("MOVECOST_WEBR_BASE_URL") ?? `https://cdn.jsdelivr.net/npm/webr@${WEBR_VERSION}/dist/`;
 const UPSTREAM_WASM_REPO = "https://repo.r-wasm.org";
 const WASM_CRAN_REPOS = (() => {
   const override = readOverride$1("MOVECOST_WASM_REPO");
   return override ? [override, UPSTREAM_WASM_REPO] : [UPSTREAM_WASM_REPO];
 })();
-const WASM_CRAN_REPO = WASM_CRAN_REPOS[0];
 const R_PACKAGES = [
   "jsonlite",
   "sp",
@@ -3162,10 +3161,14 @@ class MovecostEngine {
    * allowed. Falls back to the CDN, which is what the demo page and browser
    * builds use.
    */
-  constructor(baseUrl = WEBR_BASE_URL) {
+  constructor(baseUrl = WEBR_BASE_URL, extraRepos = []) {
     this.baseUrl = baseUrl;
+    this.extraRepos = extraRepos;
   }
   id = "webr";
+  get repos() {
+    return [...this.extraRepos, ...WASM_CRAN_REPOS.filter((r13) => !this.extraRepos.includes(r13))];
+  }
   webR = null;
   booting = null;
   queue = Promise.resolve();
@@ -3200,7 +3203,7 @@ class MovecostEngine {
       this.emit("downloading-r", "Downloading the R runtime (about 40 MB, once per session)…", null);
       const webR = new Je({
         baseUrl: this.baseUrl,
-        repoUrl: WASM_CRAN_REPO,
+        repoUrl: this.repos[0],
         interactive: false
       });
       await webR.init();
@@ -3212,7 +3215,7 @@ class MovecostEngine {
           `Installing R package ${pkg}…`,
           Math.min(0.99, done / total)
         );
-        await installPackage(webR, pkg);
+        await installPackage(webR, pkg, this.repos);
         done += R_PACKAGE_WEIGHTS[pkg] ?? 1;
       }
       this.emit("loading-engine", "Loading the movecost engine…", 1);
@@ -3336,16 +3339,16 @@ async function ensureDir(webR, path) {
 async function cleanupDir(webR, dir) {
   await webR.evalRVoid(`unlink(${rString(dir)}, recursive = TRUE, force = TRUE)`).catch(() => void 0);
 }
-async function installPackage(webR, pkg) {
+async function installPackage(webR, pkg, repos) {
   const install = webR.installPackages.bind(webR);
   try {
-    await install([pkg], { repos: WASM_CRAN_REPOS, quiet: true });
+    await install([pkg], { repos, quiet: true });
   } catch (error) {
     try {
       await install([pkg]);
     } catch {
       throw new Error(
-        `Could not install the R package "${pkg}". Check that ${WASM_CRAN_REPOS.join(" and ")} are reachable from GeoLibre. Original error: ${describeError(error)}`
+        `Could not install the R package "${pkg}". Check that ${repos.join(" and ")} are reachable from GeoLibre. Original error: ${describeError(error)}`
       );
     }
   }
@@ -4191,15 +4194,26 @@ class MovecostPanel {
   lastRun = null;
   produced = [];
   /**
-   * Prefers a copy of webR shipped alongside the plugin manifest, because the
-   * desktop host's CSP will not start a worker from another origin. Returns
-   * undefined — and so the CDN default — when no such copy is installed.
+   * A copy of webR shipped alongside the plugin manifest takes precedence over
+   * the CDN default. Returns undefined — and so the default — when none is.
    */
   webrBaseUrl() {
+    return this.pluginAsset("webr/") ?? void 0;
+  }
+  /**
+   * The repository published next to the manifest, when there is one. That is
+   * where the rebuilt terra lives (docs/TERRA-WASM.md): the plugin site puts it
+   * at `wasm-repo/`, so a manifest-URL install finds it with no configuration.
+   */
+  pluginRepos() {
+    const repo = this.pluginAsset("wasm-repo");
+    return repo ? [repo.replace(/\/$/, "")] : [];
+  }
+  pluginAsset(relativePath) {
     try {
-      return this.app.resolvePluginAssetUrl?.("movecost", "webr/") ?? void 0;
+      return this.app.resolvePluginAssetUrl?.("movecost", relativePath) ?? null;
     } catch {
-      return void 0;
+      return null;
     }
   }
   /**
@@ -4219,8 +4233,8 @@ class MovecostPanel {
     if (this.backendProbe) return this.backendProbe;
     this.backendProbe = (async () => {
       const health = await probeBackend(DEFAULT_BACKEND_URL);
-      const backend = health ? new HttpBackend(DEFAULT_BACKEND_URL, health.versions ?? null) : new MovecostEngine(this.webrBaseUrl());
-      this.backendNote = health ? null : `No local R service on ${DEFAULT_BACKEND_URL}. Falling back to the in-browser runtime, which cannot currently load the terra package — start the R service for a working analysis (see r-backend/README.md).`;
+      const backend = health ? new HttpBackend(DEFAULT_BACKEND_URL, health.versions ?? null) : new MovecostEngine(this.webrBaseUrl(), this.pluginRepos());
+      this.backendNote = health ? null : `No local R service on ${DEFAULT_BACKEND_URL}, so R runs in the page. That works, but it is roughly a hundred times slower and cannot download elevation — load a GeoTIFF. The first run fetches about 65 MB. For real work, start the R service (r-backend/README.md) and press Recheck.`;
       this.disposeProgress = backend.onProgress((event) => {
         this.progress = event.phase === "done" || event.phase === "error" ? null : event;
         this.renderStatus();
@@ -4371,7 +4385,7 @@ class MovecostPanel {
     if (this.backend && !canDownload) {
       children.push(
         note(
-          "Downloading elevation needs the local R service — the in-browser runtime has no network access to the tile server. Start the service, or load a GeoTIFF instead.",
+          'Downloading elevation needs the local R service; the in-browser runtime cannot reach the tile server. Switch to "Load a GeoTIFF from disk" above.',
           "warn"
         )
       );
