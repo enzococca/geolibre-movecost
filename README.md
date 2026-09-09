@@ -6,10 +6,14 @@ R package.
 
 The plugin runs movecost through a small R service on your own machine
 (`r-backend/`), and carries a second, zero-install backend that runs R itself as
-WebAssembly in the page. The in-browser path is complete except for one upstream
-problem — the published `terra` WebAssembly binary will not load — so **the local
-R service is the working backend today**. The panel probes for it when it opens
-and tells you which one it got. See [docs/WEBR-FINDINGS.md](docs/WEBR-FINDINGS.md).
+WebAssembly in the page. **The local R service is the fast path** and the one
+to use for real work. The in-browser path works too, with one prerequisite: the
+`terra` binary published for webR will not load, so the plugin has to be pointed
+at a rebuilt one (`scripts/build-terra-wasm.sh`, then `MOVECOST_WASM_REPO`) —
+and it is roughly a hundred times slower. The panel probes for the R service
+when it opens and tells you which backend it got. See
+[docs/WEBR-FINDINGS.md](docs/WEBR-FINDINGS.md) and
+[docs/TERRA-WASM.md](docs/TERRA-WASM.md).
 
 | Analysis | movecost function | What you get |
 | --- | --- | --- |

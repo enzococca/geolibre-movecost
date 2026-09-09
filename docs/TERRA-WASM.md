@@ -114,24 +114,16 @@ symbols are hidden and not re-exported to a side module — while the standalone
 verified with `emnm`. The header says renamed; the library that could satisfy
 them says plain.
 
-## What was tried, and what to try next
+## The fix, and proof that it works
 
-`PROJ_WORKAROUND=1 bash scripts/build-terra-wasm.sh` cancels the define with
-`-UPROJ_RENAME_SYMBOLS`, injected into rwasm's own `webr-vars.mk` (rwasm sets
-`R_MAKEVARS_USER` to that file, so `~/.R/Makevars` is ignored — that detail
-costs an hour if you miss it). terra then compiles, and fails at link:
+`-UPROJ_RENAME_SYMBOLS` was the first attempt: it compiles, then fails at link
+with `wasm-ld: error: duplicate symbol: geod_position`, because the same define
+also renames terra's **bundled GeographicLib** routines, which without it
+collide with the copies inside PROJ/GDAL. The define does two jobs and only one
+of them is wrong.
 
-```
-wasm-ld: error: duplicate symbol: geod_position
-```
-
-because the same define also renames terra's **bundled GeographicLib** routines,
-which without it collide with the copies inside PROJ/GDAL. The define does two
-jobs and only one of them is wrong here.
-
-The surgical variant, not yet tried: keep `-DPROJ_RENAME_SYMBOLS` and map only
-the seven PROJ entry points back to their plain names, so the geodesic renaming
-is untouched:
+So the script keeps the define and maps just the seven PROJ entry points back to
+their plain names, then links `-lproj` so the plain names resolve:
 
 ```make
 CPPFLAGS += -Dinternal_proj_create=proj_create \
@@ -141,16 +133,52 @@ CPPFLAGS += -Dinternal_proj_create=proj_create \
             -Dinternal_proj_context_set_enable_network=proj_context_set_enable_network \
             -Dinternal_proj_context_set_url_endpoint=proj_context_set_url_endpoint \
             -Dinternal_proj_context_get_url_endpoint=proj_context_get_url_endpoint
+LIBS     += -lproj
 ```
 
-(The mutual `proj_create` → `internal_proj_create` → `proj_create` expansion
-terminates: the preprocessor will not re-expand a macro inside its own
-expansion.) The link line then also needs `-lproj` if `gdal-config --libs` does
-not already supply it.
+The mutual `proj_create` → `internal_proj_create` → `proj_create` expansion
+terminates because the preprocessor never re-expands a macro inside its own
+expansion. The flags go into rwasm's own `webr-vars.mk` — rwasm sets
+`R_MAKEVARS_USER` to that file, so `~/.R/Makevars` is silently ignored, a detail
+that costs an hour if missed.
+
+This is what `bash scripts/build-terra-wasm.sh` does by default now
+(`PROJ_WORKAROUND=0` reproduces the upstream failure, `PROJ_WORKAROUND=undef`
+the blunt variant). Result, verified in a browser against webR 0.6.0:
+
+| Step | Result |
+| --- | --- |
+| `library(terra)` | ✅ |
+| `library(raster)`, `library(gdistance)`, `library(movecost)` | ✅ |
+| Least-cost paths on the 120 × 120 test DTM, Tobler, 16 directions | ✅ identical ranges to the native run |
+| Time for that analysis | 54.7 s in WebAssembly vs 0.6 s in native R |
+
+The last row is the honest cost of the in-browser path: roughly two orders of
+magnitude slower than the local R service. Fine for a small study area and for
+a machine with no R; not what you want for a large DTM or for comparing many
+cost functions.
+
+## Serving the repository
+
+The plugin needs the rebuilt terra from an HTTPS host with
+`Access-Control-Allow-Origin: *`. `build/wasm-repo/` is the whole thing (two
+`.tgz`, ~12 MB); GitHub Pages of this repository is the obvious home. Then, in
+GeoLibre's devtools console:
+
+```js
+localStorage.setItem("MOVECOST_WASM_REPO", "https://<host>/wasm-repo");
+```
+
+The override is *prepended* to the upstream repository, so only terra comes
+from it and everything else still comes from repo.r-wasm.org. Inside GeoLibre
+Desktop one more piece is needed — webR's own assets shipped alongside the
+plugin, because the app's CSP allows workers only from its own origin; see
+WEBR-FINDINGS.md.
 
 ## Reporting it upstream
 
 This is a webR sysroot packaging problem rather than a terra one: the PROJ build
-flags and the PROJ library disagree. It is worth an issue on
-[r-wasm/webr](https://github.com/r-wasm/webr/issues) with the symbol list above.
-The plugin keeps working through the local R service in the meantime.
+flags and the PROJ library disagree. An issue on
+[r-wasm/webr](https://github.com/r-wasm/webr/issues) with the symbol list above
+and the mapping that fixes it would let the upstream terra binary work for
+everyone, and make this rebuilt repository unnecessary.

@@ -6,3 +6,6 @@ examples/public/points.json
 .DS_Store
 *.log
 .Rproj.user/
+examples/public/wasm-repo/
+examples/public/plugin-entry.js
+examples/public/plugin-manifest.json

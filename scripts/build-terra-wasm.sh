@@ -66,34 +66,50 @@ mkdir -p "$OUT" "$CACHE"
   -e "MCX_PACKAGES=$PACKAGES" \
   -e "PKG_SYSREQS=false" \
   -e "PKG_SYSREQS_UPDATE=false" \
-  -e "PROJ_WORKAROUND=${PROJ_WORKAROUND:-0}" \
+  -e "PROJ_WORKAROUND=${PROJ_WORKAROUND:-1}" \
   "$IMAGE" \
   bash -lc '
     set -euo pipefail
 
-    # OPTIONAL, and currently NOT a working fix — see docs/TERRA-WASM.md.
+    # Work around a mismatch in the webR wasm sysroot — see docs/TERRA-WASM.md.
     #
-    # `gdal-config --cflags` in the webR sysroot advertises renamed PROJ symbols
-    # (-DPROJ_RENAME_SYMBOLS), so terra compiles its PROJ calls as
-    # internal_proj_create and friends. Those live inside libgdal.a with hidden
-    # visibility and the standalone libproj.a exports the plain names, so the
-    # calls stay unresolved, Emscripten turns each into a stub, and
-    # library(terra) dies on the first one with "resolved is not a function".
+    # `gdal-config --cflags` there passes -DPROJ_RENAME_SYMBOLS, so terra compiles
+    # its PROJ calls as internal_proj_create and friends. Those live inside
+    # libgdal.a with hidden visibility, while the standalone libproj.a exports the
+    # plain names — so the calls stay unresolved, Emscripten turns each into a
+    # stub, and library(terra) dies with "resolved is not a function".
     #
-    # PROJ_WORKAROUND=1 cancels the define. It compiles, but then fails to link:
-    # the same define also renames terra own bundled GeographicLib routines, so
-    # without it terra geod_* collide with the copies inside PROJ/GDAL
-    # ("wasm-ld: error: duplicate symbol: geod_position"). Left in because it
-    # documents what was tried; the promising variant is described in the docs.
-    if [ "${PROJ_WORKAROUND:-0}" = "1" ]; then
-      VARS=$(R -q --no-echo -e "cat(system.file(\"webr-vars.mk\", package=\"rwasm\"))" 2>/dev/null || true)
-      if [ -n "$VARS" ] && [ -f "$VARS" ]; then
+    # Cancelling the define outright breaks the link instead (it also renames
+    # terra own bundled GeographicLib routines, which then collide with PROJ
+    # copies). So the define stays, and only the seven PROJ entry points terra
+    # calls directly are mapped back to their plain names; -lproj then satisfies
+    # them. The mutual proj_create -> internal_proj_create -> proj_create
+    # expansion terminates because the preprocessor never re-expands a macro
+    # inside its own expansion.
+    #
+    # The flags go into rwasm own vars file: rwasm sets R_MAKEVARS_USER to
+    # <rwasm>/webr-vars.mk, so ~/.R/Makevars is never read. PROJ_WORKAROUND=0
+    # builds without any of this (reproduces the upstream failure);
+    # PROJ_WORKAROUND=undef tries the blunt -U variant.
+    VARS=$(R -q --no-echo -e "cat(system.file(\"webr-vars.mk\", package=\"rwasm\"))" 2>/dev/null || true)
+    case "${PROJ_WORKAROUND:-1}" in
+      0) echo "PROJ workaround disabled" ;;
+      undef)
         printf "\nCPPFLAGS += -UPROJ_RENAME_SYMBOLS\nCXXFLAGS += -UPROJ_RENAME_SYMBOLS\n" >> "$VARS"
-        echo "Patched $VARS with -UPROJ_RENAME_SYMBOLS"
-      else
-        echo "WARNING: could not find rwasm webr-vars.mk; the flag was not applied." >&2
-      fi
-    fi
+        echo "Patched $VARS with -UPROJ_RENAME_SYMBOLS" ;;
+      *)
+        if [ -z "$VARS" ] || [ ! -f "$VARS" ]; then
+          echo "ERROR: could not find rwasm webr-vars.mk to patch." >&2; exit 1
+        fi
+        MAP=""
+        for sym in proj_create proj_destroy proj_context_set_search_paths \
+                   proj_context_is_network_enabled proj_context_set_enable_network \
+                   proj_context_set_url_endpoint proj_context_get_url_endpoint; do
+          MAP="$MAP -Dinternal_${sym}=${sym}"
+        done
+        printf "\nCPPFLAGS +=%s\nCXXFLAGS +=%s\nLIBS += -lproj\n" "$MAP" "$MAP" >> "$VARS"
+        echo "Patched $VARS: PROJ entry points mapped to plain names, -lproj added" ;;
+    esac
 
     R -q -e "
       pkgs <- strsplit(Sys.getenv(\"MCX_PACKAGES\"), \" +\")[[1]]

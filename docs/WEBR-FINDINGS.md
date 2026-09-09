@@ -87,12 +87,13 @@ local R service without any host change.
 
 The plugin ships **two backends** and prefers whichever works:
 
-1. **Local R service** (`r-backend/`) — the working path today. Real movecost,
-   native speed, no download. This is what the panel uses when it answers on the
-   loopback port.
-2. **webR in the page** — kept, because everything except terra already works
-   and the moment a loadable terra wasm build exists it becomes the zero-install
-   path. Until then the panel says so rather than failing silently.
+1. **Local R service** (`r-backend/`) — real movecost, native speed, no
+   download. This is what the panel uses when it answers on the loopback port.
+2. **webR in the page** — now working, with a rebuilt terra served from a
+   repository the plugin is pointed at (`MOVECOST_WASM_REPO`); see
+   [TERRA-WASM.md](TERRA-WASM.md). About two orders of magnitude slower than the
+   R service, and inside GeoLibre Desktop it also needs webR's assets shipped
+   with the plugin (next section). The panel says which backend it has.
 
 ## Reproducing the diagnosis
 
