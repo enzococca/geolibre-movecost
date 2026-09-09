@@ -29,6 +29,30 @@ Registry updates later = bump version in plugin.json + registry entry,
 installs block on GeoLibre's trust hash after every republish and the iPad
 build showed no reload control to re-accept.
 
+## movecost 2.2 vs CRAN 3.0.0 (checked 2026-09-09)
+
+CRAN carries **3.0.0** (published 2026-06-15); the plugin runs **2.2** on both
+paths — `repo.r-wasm.org` (R 4.6) still builds 2.2, and the Mac's local R has
+2.2 (built 2026-04-29, i.e. before 3.0.0 existed). 3.0.0 is a redesign:
+`mc_surface()` once, then `mc_accum`/`mc_paths`/`mc_corridor`/`mc_boundary`/
+`mc_alloc`/`mc_network`/`mc_rank`; stack becomes terra+sf+igraph (raster, sp,
+gdistance, chron, hard elevatr all dropped); plotting decoupled into ggplot2
+methods; the same 26 cost functions. The 2.x entry points are **defunct stubs
+that raise an error**.
+
+Live defect found and fixed the same day (`aa6fdfe`): every install instruction
+said `install.packages("movecost")`, which today fetches 3.0.0 and breaks the
+local R service. README, r-backend/README and the published guide now pin
+`remotes::install_version("movecost", "2.2")`, and `mcx_require()` refuses 3.x
+with a message naming the fix. Native suite still 11/11.
+
+Porting to 3.0.0 is feasible and worthwhile when there is time: all its
+dependencies already have wasm builds upstream (igraph 2.3.1, ggplot2 4.0.3,
+terra 1.9-27, sf 1.1-1) and movecost is pure R, so it can go into
+`build/wasm-repo` through the same rwasm pipeline as terra. The work is
+confined to the `mcx_analysis_*()` functions; the JSON contract and the whole
+TypeScript side are untouched.
+
 ## Demo video for social media (2026-09-09)
 
 `scripts/record-demo.mjs <geolibre-url> <data-base-url> [outdir]` records a
