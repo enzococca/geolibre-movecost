@@ -1,0 +1,11 @@
+{
+  "id": "movecost",
+  "name": "movecost — least-cost analysis",
+  "version": "0.1.0",
+  "manifestUrl": "https://REPLACE-WITH-YOUR-HOST/plugins/movecost/plugin.json",
+  "description": "Least-cost paths, corridors, networks, cost allocation and isochrones with the movecost R package compiled to WebAssembly. No local R installation required.",
+  "author": "Enzo Cocca",
+  "homepage": "https://github.com/enzococca/geolibre-movecost",
+  "categories": ["Analysis"],
+  "minGeoLibreVersion": "1.0.0"
+}

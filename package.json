@@ -1,0 +1,24 @@
+{
+  "name": "geolibre-movecost",
+  "version": "0.1.0",
+  "description": "Least-cost path, corridor, network, allocation and boundary analysis in GeoLibre, powered by the movecost R package running in WebAssembly.",
+  "author": "Enzo Cocca",
+  "license": "GPL-3.0-or-later",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "build": "vite build",
+    "typecheck": "tsc --noEmit",
+    "package": "npm run build && node scripts/package-plugin.mjs",
+    "install:geolibre": "npm run build && node scripts/install-plugin.mjs",
+    "serve:demo": "vite --config vite.demo.config.ts",
+    "test:engine": "Rscript scripts/test-engine.R"
+  },
+  "dependencies": {
+    "webr": "0.6.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.2",
+    "vite": "^6.0.7"
+  }
+}

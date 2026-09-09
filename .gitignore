@@ -1,0 +1,8 @@
+node_modules/
+dist/
+build/
+examples/public/dtm.tif
+examples/public/points.json
+.DS_Store
+*.log
+.Rproj.user/

@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>movecost engine — browser test</title>
+    <style>
+      :root { color-scheme: light dark; }
+      body {
+        margin: 0; padding: 24px; max-width: 900px;
+        font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+      }
+      h1 { font-size: 18px; margin: 0 0 4px; }
+      p.lede { margin: 0 0 20px; opacity: 0.75; }
+      button { padding: 7px 14px; font: inherit; border-radius: 6px; cursor: pointer; }
+      #status { margin: 14px 0; font-variant-numeric: tabular-nums; }
+      #bar { height: 5px; background: #8884; border-radius: 3px; overflow: hidden; }
+      #bar > div { height: 100%; width: 0; background: #2b7; transition: width .2s; }
+      pre { background: #8881; padding: 10px; border-radius: 6px; overflow: auto; max-height: 340px; font-size: 12px; }
+      canvas { border: 1px solid #8886; border-radius: 6px; image-rendering: pixelated; max-width: 100%; }
+      .row { display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap; }
+      label { display: block; margin: 8px 0; }
+    </style>
+  </head>
+  <body>
+    <h1>movecost engine — browser test</h1>
+    <p class="lede">
+      Boots webR, installs movecost and its dependencies from repo.r-wasm.org, and runs one
+      analysis on the bundled test DTM. First run downloads roughly 65&nbsp;MB.
+    </p>
+
+    <label>
+      Analysis
+      <select id="analysis">
+        <option value="paths">Least-cost paths</option>
+        <option value="corridor">Least-cost corridor</option>
+        <option value="network">Least-cost network</option>
+        <option value="allocation">Cost allocation</option>
+        <option value="boundary">Cost boundary (1 h)</option>
+        <option value="rank">Ranked paths</option>
+      </select>
+    </label>
+    <label>
+      Cost function
+      <select id="funct">
+        <option value="t">Tobler on-path</option>
+        <option value="tofp">Tobler off-path</option>
+        <option value="p">Pandolf metabolic</option>
+        <option value="hrz">Herzog metabolic</option>
+        <option value="ree">Relative energetic expenditure</option>
+      </select>
+    </label>
+
+    <p><button id="run">Run</button></p>
+    <div id="status">Idle.</div>
+    <div id="bar"><div></div></div>
+
+    <div class="row">
+      <div>
+        <h2 style="font-size:14px">Raster</h2>
+        <canvas id="raster" width="300" height="300"></canvas>
+      </div>
+      <div style="flex:1; min-width: 320px">
+        <h2 style="font-size:14px">Response</h2>
+        <pre id="out">—</pre>
+      </div>
+    </div>
+
+    <script type="module" src="./demo.ts"></script>
+  </body>
+</html>
