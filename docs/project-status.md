@@ -77,18 +77,42 @@ the script aborts if a future movecost ever ships compiled code.
 into webR under Node and runs `mcx_run()` itself — verified with movecost 3.0.0,
 terra 1.9.46, sf 1.1.1, igraph 2.3.1, ggplot2 4.0.3.
 
-**Still to verify live:** the PR preview
-(`https://opengeos.org/pages-preview/geolibre-plugins/pr-54/`) is stuck on
-0.1.8 because its workflow needs a maintainer to approve the run, so no
-end-to-end run against a real GeoLibre host has happened on 0.2.0 yet. 0.2.0 is
-installed into GeoLibre Desktop on the Mac
-(`~/Library/Application Support/org.geolibre.desktop/plugins/movecost`), which
-is the quickest way to look at it. The guide screenshots in `docs/guide/images/`
-still show 0.1.8's panel — the differences are the version string, "Isoline
-interval" in place of "Isoline values", the dropped "irregular outline"
-checkbox, and the terrain-factor control now offered for most functions.
-Re-capture with `scripts/capture-guide.mjs` once a host serving 0.2.0 is
-reachable.
+**Verified live (2026-09-09).** The registry preview is unusable — its workflow
+needs a maintainer to approve each run and the `opengeos/pages-preview` Pages
+build keeps erroring — so `scripts/build-geolibre-preview.sh` reproduces it
+locally: clone opengeos/GeoLibre, drop the plugin into
+`apps/geolibre-desktop/public/plugins/`, `GEOLIBRE_APP_BASE=./ npm run build -w
+geolibre-desktop`, serve `dist`. `scripts/capture-guide.mjs` then ran the whole
+Pompeii walkthrough against it on 0.2.0 — plugin activated, layers loaded, DEM
+downloaded, analysis in 11.8 s through the local R service, results drawn and
+grouped — and `docs/guide/images/` is recaptured from that run.
+
+`scripts/test-matrix.R` is the thorough check: every analysis with and without
+a barrier, all 26 cost functions, the neighbourhoods, both time units,
+cognitive slope, topographic distance, and the cache. All green.
+
+**Two bugs the live run found, both fixed in `afd22d5`:**
+
+1. `jsonlite`'s `auto_unbox` turned a one-line `log` into a bare string, so the
+   panel's `log.join()` threw on every successful analysis — and one line is
+   exactly what a cached-surface run produces. `mcx_log_out()` wraps it in
+   `I()`; the panel accepts either shape.
+2. Enzo's 422s came from the R service having been started at 10:23, before the
+   movecost upgrade: `packageVersion()` read 3.0.0 from disk while the loaded
+   namespace was still 2.2. `mcx_require()` now checks that `mc_surface()`
+   actually exists in the loaded namespace and says "restart the R service".
+
+**Barriers are rasterised by the cells they fall in.** A line laid exactly along
+the DTM's grid lines touches almost none: on 50 m cells a wall on a row boundary
+removed 16 graph edges and blocked nothing, the same wall 25 m higher removed
+about 950. movecost's behaviour, not ours, and only round-coordinate fixtures
+hit it — but it cost an hour to find, so the matrix test says so in a comment.
+
+**Still open:** GeoLibre Desktop logged
+`Image "geolibre-marker-triangle-dc2626-22" could not be loaded` once, and a
+burst of `There is no tile manager with ID 'gm_temporary'`. Neither reproduced
+in the local web build, where the red triangles render correctly. Watch for
+them.
 
 **Gotcha for future sessions:** R on the Mac only works under
 `do shell script` with `PROJ_LIB=/opt/homebrew/share/proj` (and `GDAL_DATA`)
