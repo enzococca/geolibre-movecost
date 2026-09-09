@@ -53,6 +53,74 @@ function() {
   )
 }
 
+#* Turn a browser-fetched elevation grid into a projected DTM.
+#*
+#* Multipart: `grid` (raw little-endian Float32, row-major from the top-left),
+#* `meta` (JSON: width, height, xmin, ymin, xmax, ymax, crs, zoom), optional
+#* `area` (GeoJSON polygon to mask to). Responds like /dem: the GeoTIFF itself,
+#* with the summary in the X-Movecost-Summary header.
+#*
+#* @post /grid
+#* @parser multi
+#* @parser octet
+function(req, res) {
+  body <- req$body
+  work <- file.path(tempdir(), paste0("mcx-grid-", as.integer(runif(1, 1, 1e9))))
+  dir.create(work, recursive = TRUE, showWarnings = FALSE)
+  on.exit(unlink(work, recursive = TRUE, force = TRUE), add = TRUE)
+
+  part <- function(name) {
+    value <- body[[name]]
+    if (is.null(value)) return(NULL)
+    if (is.list(value) && !is.null(value$value)) value$value else value
+  }
+  text_of <- function(value) if (is.raw(value)) rawToChar(value) else as.character(value)
+
+  grid <- part("grid")
+  meta_raw <- part("meta")
+  if (is.null(grid) || is.null(meta_raw)) {
+    res$status <- 400
+    return(list(ok = FALSE, error = "The request needs 'grid' and 'meta' parts."))
+  }
+  meta <- tryCatch(jsonlite::fromJSON(text_of(meta_raw), simplifyVector = TRUE),
+                   error = function(e) NULL)
+  if (is.null(meta)) {
+    res$status <- 400
+    return(list(ok = FALSE, error = "The 'meta' part must be JSON."))
+  }
+
+  grid_path <- file.path(work, "grid.bin")
+  writeBin(if (is.raw(grid)) grid else as.raw(grid), grid_path)
+
+  area <- part("area")
+  area_path <- NULL
+  if (!is.null(area) && nzchar(text_of(area))) {
+    area_path <- file.path(work, "area.geojson")
+    writeLines(text_of(area), area_path, useBytes = TRUE)
+  }
+
+  request_path <- file.path(work, "grid-request.json")
+  jsonlite::write_json(
+    c(as.list(meta), list(gridPath = grid_path, areaPath = area_path,
+                          outPath = file.path(work, "dem.tif"))),
+    request_path, auto_unbox = TRUE, null = "null"
+  )
+
+  summary <- jsonlite::fromJSON(mcx_grid_to_dtm(request_path), simplifyVector = TRUE)
+  if (!isTRUE(summary$ok)) {
+    res$status <- 422
+    res$setHeader("Content-Type", "application/json")
+    return(list(ok = FALSE, error = summary$error))
+  }
+  res$setHeader("X-Movecost-Summary", jsonlite::toJSON(
+    summary[setdiff(names(summary), "path")], auto_unbox = TRUE, digits = 6
+  ))
+  res$setHeader("Access-Control-Expose-Headers", "X-Movecost-Summary")
+  res$setHeader("Content-Type", "image/tiff")
+  res$body <- readBin(summary$path, "raw", n = file.info(summary$path)$size)
+  res
+}
+
 #* Summarise a DTM so the plugin can draw it on the map.
 #*
 #* Expects a multipart body with a single `dtm` GeoTIFF. Responds with the same

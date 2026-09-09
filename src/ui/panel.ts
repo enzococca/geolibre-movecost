@@ -9,6 +9,7 @@ import {
   type DemSummary,
 } from "../engine/backend";
 import type { DtmPreview } from "../engine/types";
+import { fetchTerrariumGrid } from "../map/terrain-tiles";
 import {
   COLOUR_RAMPS,
   addRasterOverlay,
@@ -378,16 +379,15 @@ export class MovecostPanel {
 
   /** Draw-an-area flow: pick a polygon, choose a zoom, fetch the elevation. */
   private renderDemDownload(): HTMLElement[] {
-    const canDownload = typeof this.backend?.fetchDem === "function";
+    // Two ways to get elevation for an area: the R service asks elevatr, or the
+    // page fetches the tiles itself and hands R the grid. Either is enough.
+    const viaService = typeof this.backend?.fetchDem === "function";
+    const viaTiles = typeof this.backend?.dtmFromGrid === "function";
     const children: HTMLElement[] = [];
 
-    if (this.backend && !canDownload) {
+    if (this.backend && !viaService && !viaTiles) {
       children.push(
-        note(
-          "Downloading elevation needs the local R service; the in-browser runtime cannot " +
-            "reach the tile server. Switch to \"Load a GeoTIFF from disk\" above.",
-          "warn",
-        ),
+        note("This backend cannot fetch elevation. Switch to \"Load a GeoTIFF from disk\" above.", "warn"),
       );
       return children;
     }
@@ -459,7 +459,7 @@ export class MovecostPanel {
     );
     download.disabled = this.downloadingDem || !this.area;
 
-    const direct = button(
+    const direct = viaService ? button(
       this.useArea ? "Downloading per run ✓" : "Use area directly",
       () => {
         this.useArea = !this.useArea;
@@ -470,13 +470,23 @@ export class MovecostPanel {
         this.render();
       },
       this.useArea ? "primary" : "secondary",
-    );
-    direct.disabled = !this.area;
-    direct.title =
-      "Hand the area to movecost as its studyplot. It downloads elevation inside " +
-      "every run, so this is quicker for one analysis and slower for several.";
+    ) : null;
+    if (direct) {
+      direct.disabled = !this.area;
+      direct.title =
+        "Hand the area to movecost as its studyplot. It downloads elevation inside " +
+        "every run, so this is quicker for one analysis and slower for several.";
+    }
 
     children.push(el("div", { class: "mcx-actions" }, download, direct));
+    if (!viaService && viaTiles) {
+      children.push(
+        el("p", {
+          class: "mcx-description",
+          text: "Elevation is fetched tile by tile from the AWS terrain dataset and projected in the page.",
+        }),
+      );
+    }
 
     if (this.useArea) {
       children.push(
@@ -537,8 +547,10 @@ export class MovecostPanel {
   private async downloadDem(): Promise<void> {
     if (!this.area) return;
     const backend = await this.resolveBackend();
-    if (typeof backend.fetchDem !== "function") {
-      this.message = { text: "This backend cannot download elevation.", tone: "warn" };
+    const viaService = typeof backend.fetchDem === "function";
+    const viaTiles = typeof backend.dtmFromGrid === "function";
+    if (!viaService && !viaTiles) {
+      this.message = { text: "This backend cannot fetch elevation.", tone: "warn" };
       this.render();
       return;
     }
@@ -549,7 +561,25 @@ export class MovecostPanel {
 
     try {
       const areaGeoJson = JSON.stringify(toFeatureCollection(this.area.features));
-      const { bytes, summary } = await backend.fetchDem(areaGeoJson, this.demZoom);
+      let result;
+      if (viaService) {
+        result = await backend.fetchDem!(areaGeoJson, this.demZoom);
+      } else {
+        // Terrarium tiles are 256 px where elevatr's GeoTIFF tiles are 512 px,
+        // so one zoom level finer gives the cell size the menu promises.
+        const tileZoom = Math.min(15, this.demZoom + 1);
+        const grid = await fetchTerrariumGrid(this.area.features, tileZoom, (done, total) => {
+          this.progress = {
+            phase: "running",
+            message: `Fetching elevation tiles… ${done}/${total}`,
+            fraction: total ? done / total : null,
+          };
+          this.renderStatus();
+        });
+        result = await backend.dtmFromGrid!(grid, areaGeoJson);
+        result.summary.zoom = this.demZoom;
+      }
+      const { bytes, summary } = result;
       this.dtm = { name: `DEM (zoom ${summary.zoom})`, bytes, summary };
       this.useArea = false;
       const cells = summary.width * summary.height;

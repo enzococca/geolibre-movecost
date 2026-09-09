@@ -10,7 +10,8 @@ import type {
   EngineResponse,
   ProgressEvent,
 } from "./types";
-import type { AnalysisBackend } from "./backend";
+import { parseDemSummary, type AnalysisBackend, type DemResult } from "./backend";
+import type { ElevationGrid } from "../map/terrain-tiles";
 
 const WORK_DIR = "/movecost";
 const ENGINE_PATH = `${WORK_DIR}/movecost-engine.R`;
@@ -202,6 +203,62 @@ export class MovecostEngine implements AnalysisBackend {
     await cleanupDir(webR, dir);
     this.emit(response.ok ? "done" : "error", response.ok ? "Analysis complete." : response.error, 1);
     return response;
+  }
+
+  /**
+   * The in-browser route to terrain for a drawn area: the page fetches the
+   * tiles, R turns the grid into a UTM GeoTIFF. Serialised through the queue
+   * like an analysis, since it shares the R session.
+   */
+  dtmFromGrid(grid: ElevationGrid, areaGeoJson: string | null): Promise<DemResult> {
+    const task = this.queue.then(
+      () => this.gridNow(grid, areaGeoJson),
+      () => this.gridNow(grid, areaGeoJson),
+    );
+    this.queue = task.catch(() => undefined);
+    return task;
+  }
+
+  private async gridNow(grid: ElevationGrid, areaGeoJson: string | null): Promise<DemResult> {
+    const webR = await this.boot();
+    const dir = `${WORK_DIR}/grid-${++this.requestCounter}`;
+    await ensureDir(webR, dir);
+    const encoder = new TextEncoder();
+    const gridPath = `${dir}/grid.bin`;
+    const areaPath = areaGeoJson ? `${dir}/area.geojson` : null;
+    const outPath = `${dir}/dem.tif`;
+    const requestPath = `${dir}/grid.json`;
+    const responsePath = `${dir}/grid.response.json`;
+
+    this.emit("running", "Projecting the elevation grid…", null);
+    await webR.FS.writeFile(
+      gridPath,
+      new Uint8Array(grid.data.buffer, grid.data.byteOffset, grid.data.byteLength),
+    );
+    if (areaPath) await webR.FS.writeFile(areaPath, encoder.encode(areaGeoJson!));
+    await webR.FS.writeFile(
+      requestPath,
+      encoder.encode(JSON.stringify({
+        gridPath, areaPath, outPath,
+        width: grid.width, height: grid.height, crs: grid.crs, zoom: grid.zoom,
+        xmin: grid.xmin, ymin: grid.ymin, xmax: grid.xmax, ymax: grid.ymax,
+      })),
+    );
+    await webR.evalRVoid(`mcx_grid_to_dtm(${rString(requestPath)})`);
+
+    const raw = JSON.parse(
+      new TextDecoder().decode(await webR.FS.readFile(responsePath)),
+    ) as { ok: boolean; error?: string } & Record<string, unknown>;
+    if (!raw.ok) {
+      await cleanupDir(webR, dir);
+      this.emit("error", raw.error ?? "The grid could not be projected.", 1);
+      throw new Error(raw.error ?? "The grid could not be projected.");
+    }
+    const bytes = await webR.FS.readFile(outPath);
+    await cleanupDir(webR, dir);
+    const summary = parseDemSummary(raw);
+    this.emit("done", `Built a ${summary.width} x ${summary.height} DTM.`, 1);
+    return { bytes: new Uint8Array(bytes), summary };
   }
 
   /** Same preview the HTTP backend serves, computed in the page instead. */

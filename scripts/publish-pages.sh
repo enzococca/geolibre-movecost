@@ -20,7 +20,10 @@ for required in dist/index.js dist/style.css geolibre-plugin/plugin.json; do
   [ -f "$required" ] || { echo "Missing $required — run: npm run build" >&2; exit 1; }
 done
 
-SITE="$PWD/build/site"
+# Not build/site: that directory may be live under scripts/serve-plugin.sh, and
+# rebuilding it under a running server leaves the server pointing at a deleted
+# directory.
+SITE="$PWD/build/pages-site"
 rm -rf "$SITE"
 mkdir -p "$SITE/dist"
 cp geolibre-plugin/plugin.json "$SITE/plugin.json"

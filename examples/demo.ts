@@ -9,6 +9,7 @@ import { MovecostEngine } from "../src/engine/webr-runtime";
 import { DEFAULT_BACKEND_URL, HttpBackend, probeBackend, type AnalysisBackend } from "../src/engine/backend";
 import { decodeRaster, renderRasterToCanvas } from "../src/map/raster-overlay";
 import type { AnalysisId, AnalysisParams } from "../src/engine/types";
+import { fetchTerrariumGrid } from "../src/map/terrain-tiles";
 
 const statusEl = document.getElementById("status") as HTMLElement;
 const barEl = document.querySelector("#bar > div") as HTMLElement;
@@ -26,7 +27,7 @@ const ready = (async () => {
   if (health) {
     engine = new HttpBackend(DEFAULT_BACKEND_URL, health.versions ?? null);
   }
-  (window as unknown as Record<string, unknown>).mcx = { engine };
+  (window as unknown as Record<string, unknown>).mcx = { engine, fetchTerrariumGrid };
   statusEl.textContent = `Backend: ${engine.label}`;
   return engine;
 })();

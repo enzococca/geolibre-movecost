@@ -535,6 +535,112 @@ mcx_fetch_dem <- function(request_path, response_path = NULL) {
   invisible(response_path)
 }
 
+#' Turn an elevation grid fetched in the browser into a projected DTM.
+#'
+#' The JavaScript side downloads AWS Terrarium tiles and decodes them into a
+#' Float32 grid in Web Mercator (EPSG:3857). Slope on a Mercator grid would be
+#' wrong by 1/cos(latitude), so the grid is reprojected to the UTM zone of its
+#' centroid here, optionally masked to the drawn area, and written as a GeoTIFF
+#' — after which it is indistinguishable from an uploaded or elevatr-fetched DTM.
+#'
+#' @param request_path JSON with `gridPath` (raw little-endian Float32, row-major
+#'   from the top-left), `width`, `height`, `xmin`/`ymin`/`xmax`/`ymax` in the
+#'   grid CRS, `crs` (default EPSG:3857), optional `areaPath` and `outPath`
+mcx_grid_to_dtm <- function(request_path, response_path = NULL) {
+  mcx_env$log <- character(0)
+  started <- Sys.time()
+  if (is.null(response_path)) {
+    response_path <- paste0(tools::file_path_sans_ext(request_path), ".response.json")
+  }
+
+  out <- tryCatch(
+    {
+      req <- jsonlite::fromJSON(request_path, simplifyVector = TRUE)
+      width <- as.integer(req$width)
+      height <- as.integer(req$height)
+      if (is.na(width) || is.na(height) || width < 2 || height < 2) {
+        mcx_stop("The elevation grid must be at least 2 x 2 cells.")
+      }
+      if (is.null(req$gridPath) || !file.exists(req$gridPath)) {
+        mcx_stop("The elevation grid file is missing.")
+      }
+      expected <- as.numeric(width) * height
+      n_bytes <- file.info(req$gridPath)$size
+      if (n_bytes != expected * 4) {
+        mcx_stop("The elevation grid has ", n_bytes, " bytes; expected ",
+                 expected * 4, " for ", width, " x ", height, " Float32 cells.")
+      }
+
+      values <- readBin(req$gridPath, what = "numeric", n = expected, size = 4,
+                        endian = "little")
+      values[is.nan(values)] <- NA_real_
+      grid_crs <- mcx_pick(req, "crs", "EPSG:3857")
+
+      r <- terra::rast(matrix(values, nrow = height, ncol = width, byrow = TRUE),
+                       crs = grid_crs)
+      terra::ext(r) <- terra::ext(req$xmin, req$xmax, req$ymin, req$ymax)
+
+      centre <- sf::st_sfc(sf::st_point(c((req$xmin + req$xmax) / 2,
+                                          (req$ymin + req$ymax) / 2)),
+                           crs = sf::st_crs(grid_crs))
+      lonlat <- sf::st_coordinates(sf::st_transform(centre, 4326))
+      epsg <- mcx_utm_epsg(lonlat[1, 1], lonlat[1, 2])
+      mcx_log("Projecting a ", width, " x ", height, " grid from ", grid_crs,
+              " to EPSG:", epsg)
+
+      # Keep the cell size the tiles actually had at this latitude, rather than
+      # terra's default guess, so the DTM resolution matches the zoom chosen.
+      mercator_res <- (req$xmax - req$xmin) / width
+      true_res <- mercator_res * cos(lonlat[1, 2] * pi / 180)
+      r <- terra::project(r, paste0("EPSG:", epsg), method = "bilinear",
+                          res = true_res)
+
+      area_path <- mcx_pick(req, "areaPath", NULL)
+      if (!is.null(area_path) && file.exists(area_path)) {
+        area <- sf::st_read(area_path, quiet = TRUE)
+        if (nrow(area) > 0) {
+          if (is.na(sf::st_crs(area))) sf::st_crs(area) <- 4326
+          area <- sf::st_transform(sf::st_make_valid(sf::st_union(area)), paste0("EPSG:", epsg))
+          area_v <- terra::vect(sf::st_as_sf(sf::st_sfc(area, crs = sf::st_crs(paste0("EPSG:", epsg)))))
+          r <- terra::mask(terra::crop(r, area_v), area_v)
+        }
+      }
+      names(r) <- "dtm"
+
+      out_path <- mcx_pick(req, "outPath", NULL)
+      if (is.null(out_path)) out_path <- file.path(dirname(request_path), "dem.tif")
+      terra::writeRaster(r, out_path, overwrite = TRUE, gdal = c("COMPRESS=DEFLATE"))
+
+      e84 <- terra::ext(terra::project(r, "EPSG:4326"))
+      finite <- terra::values(r, mat = FALSE)
+      finite <- finite[!is.na(finite)]
+
+      list(
+        ok = TRUE,
+        path = out_path,
+        bytes = file.info(out_path)$size,
+        crs = paste0("EPSG:", epsg),
+        zoom = mcx_pick(req, "zoom", NA_integer_),
+        width = terra::ncol(r),
+        height = terra::nrow(r),
+        resolution = as.numeric(terra::res(r))[1],
+        elevation = list(
+          min = if (length(finite)) min(finite) else NA_real_,
+          max = if (length(finite)) max(finite) else NA_real_
+        ),
+        bounds = list(west = e84$xmin, south = e84$ymin, east = e84$xmax, north = e84$ymax),
+        elapsedSeconds = as.numeric(difftime(Sys.time(), started, units = "secs")),
+        log = mcx_env$log
+      )
+    },
+    error = function(e) list(ok = FALSE, error = conditionMessage(e), log = mcx_env$log)
+  )
+
+  jsonlite::write_json(out, response_path, auto_unbox = TRUE, null = "null",
+                       na = "null", digits = 8)
+  invisible(response_path)
+}
+
 #' Summarise a DTM for display on the map.
 #'
 #' Returns the same raster payload shape the analyses use, so the plugin can

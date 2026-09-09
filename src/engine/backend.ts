@@ -6,6 +6,7 @@ import type {
   EngineResponse,
   ProgressEvent,
 } from "./types";
+import type { ElevationGrid } from "../map/terrain-tiles";
 
 /**
  * What the panel talks to. Two implementations exist — a local R service over
@@ -48,7 +49,38 @@ export interface AnalysisBackend {
   fetchDem?: (areaGeoJson: string, zoom: number) => Promise<DemResult>;
   /** Summarise a loaded DTM so it can be drawn on the map. */
   previewDtm?: (dtm: Uint8Array) => Promise<DtmPreview>;
+  /**
+   * Turn a grid the page fetched itself (see `map/terrain-tiles.ts`) into a
+   * projected GeoTIFF. This is how the in-browser backend gets terrain for a
+   * drawn area: the tiles are public, R just cannot fetch them from inside webR.
+   */
+  dtmFromGrid?: (grid: ElevationGrid, areaGeoJson: string | null) => Promise<DemResult>;
   close(): Promise<void>;
+}
+
+/** Shared by both backends: the summary the R side writes, unboxed. */
+export function parseDemSummary(raw: Record<string, unknown>): DemSummary {
+  // plumber's toJSON boxes scalars into single-element arrays in places, so
+  // unwrap rather than trusting the shape.
+  const scalar = (value: unknown) => (Array.isArray(value) ? value[0] : value);
+  const elevation = (raw.elevation ?? {}) as Record<string, unknown>;
+  const b = (raw.bounds ?? {}) as Record<string, unknown>;
+  return {
+    crs: String(scalar(raw.crs)),
+    zoom: Number(scalar(raw.zoom)),
+    width: Number(scalar(raw.width)),
+    height: Number(scalar(raw.height)),
+    resolution: Number(scalar(raw.resolution)),
+    bytes: Number(scalar(raw.bytes)),
+    elapsedSeconds: Number(scalar(raw.elapsedSeconds)),
+    elevation: { min: Number(scalar(elevation.min)), max: Number(scalar(elevation.max)) },
+    bounds: {
+      west: Number(scalar(b.west)),
+      south: Number(scalar(b.south)),
+      east: Number(scalar(b.east)),
+      north: Number(scalar(b.north)),
+    },
+  };
 }
 
 /** Where the local R service is expected. Overridable without a rebuild. */
@@ -212,36 +244,45 @@ export class HttpBackend implements AnalysisBackend {
         "The DEM came back without its summary header. The R service may be an older version.",
       );
     }
-    // plumber's toJSON boxes scalars into single-element arrays in places, so
-    // unwrap rather than trusting the shape.
-    const raw = JSON.parse(header) as Record<string, unknown>;
-    const scalar = (value: unknown) => (Array.isArray(value) ? value[0] : value);
-    const summary = {
-      crs: String(scalar(raw.crs)),
-      zoom: Number(scalar(raw.zoom)),
-      width: Number(scalar(raw.width)),
-      height: Number(scalar(raw.height)),
-      resolution: Number(scalar(raw.resolution)),
-      bytes: Number(scalar(raw.bytes)),
-      elapsedSeconds: Number(scalar(raw.elapsedSeconds)),
-      elevation: {
-        min: Number(scalar((raw.elevation as Record<string, unknown>)?.min)),
-        max: Number(scalar((raw.elevation as Record<string, unknown>)?.max)),
-      },
-      bounds: (() => {
-        const b = raw.bounds as Record<string, unknown>;
-        return {
-          west: Number(scalar(b?.west)),
-          south: Number(scalar(b?.south)),
-          east: Number(scalar(b?.east)),
-          north: Number(scalar(b?.north)),
-        };
-      })(),
-    } satisfies DemSummary;
+    const summary = parseDemSummary(JSON.parse(header) as Record<string, unknown>);
 
     const bytes = new Uint8Array(await response.arrayBuffer());
     this.emit("done", `Downloaded a ${summary.width} x ${summary.height} DEM.`, 1);
     return { bytes, summary };
+  }
+
+  async dtmFromGrid(grid: ElevationGrid, areaGeoJson: string | null): Promise<DemResult> {
+    const form = new FormData();
+    const bytes = new Uint8Array(grid.data.buffer, grid.data.byteOffset, grid.data.byteLength);
+    form.append("grid", new Blob([bytes as BlobPart], { type: "application/octet-stream" }), "grid.bin");
+    form.append(
+      "meta",
+      JSON.stringify({
+        width: grid.width, height: grid.height, crs: grid.crs, zoom: grid.zoom,
+        xmin: grid.xmin, ymin: grid.ymin, xmax: grid.xmax, ymax: grid.ymax,
+      }),
+    );
+    if (areaGeoJson) form.append("area", areaGeoJson);
+
+    this.emit("running", "Projecting the elevation grid…", null);
+    const response = await fetch(`${this.url}/grid`, { method: "POST", body: form });
+    if (!response.ok) {
+      let detail = `HTTP ${response.status}`;
+      try {
+        const body = (await response.json()) as { error?: string };
+        if (body?.error) detail = body.error;
+      } catch {
+        /* keep the status line */
+      }
+      this.emit("error", detail, 1);
+      throw new Error(detail);
+    }
+    const header = response.headers.get("X-Movecost-Summary");
+    if (!header) throw new Error("The DTM came back without its summary header.");
+    const summary = parseDemSummary(JSON.parse(header) as Record<string, unknown>);
+    const tif = new Uint8Array(await response.arrayBuffer());
+    this.emit("done", `Built a ${summary.width} x ${summary.height} DTM.`, 1);
+    return { bytes: tif, summary };
   }
 
   async previewDtm(dtm: Uint8Array): Promise<DtmPreview> {

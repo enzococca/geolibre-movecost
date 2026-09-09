@@ -108,9 +108,20 @@ returns the same raster payload shape the analyses use. The panel paints that
 with `addRasterOverlay()`, so seeing the terrain costs no new client-side
 GeoTIFF decoder.
 
-Only the local R service implements `fetchDem`; the webR backend leaves it
-undefined and the panel hides the option, because the browser runtime has no
-route to the tile server. `previewDtm` is implemented by both.
+Only the local R service implements `fetchDem` (elevatr, in R). The webR
+backend gets the same feature a different way, `dtmFromGrid`: the page fetches
+AWS **Terrarium** tiles itself (`src/map/terrain-tiles.ts` — public bucket,
+CORS, height encoded as `R*256 + G + B/256 − 32768`), decodes them on a canvas
+into a Float32 grid in Web Mercator, and hands that to `mcx_grid_to_dtm()`,
+which reprojects it to UTM at the true ground cell size (Mercator metres ×
+cos φ), masks it to the polygon, and writes the GeoTIFF. From there the DTM is
+an ordinary one. Terrarium tiles are 256 px where elevatr's GeoTIFF tiles are
+512 px, so the panel fetches one zoom level finer to deliver the cell size its
+menu promises. Same Vesuvius box, Tobler: 02:08:33 this way, 02:09:29 via
+elevatr — the difference is the resampling, not the terrain.
+
+`previewDtm` is implemented by both backends; the R service also exposes the
+grid route as `POST /grid` for symmetry.
 
 ## CRS handling
 

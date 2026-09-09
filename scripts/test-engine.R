@@ -136,6 +136,10 @@ cases <- list(
     preview = TRUE
   ),
   list(
+    label = "grid: browser-fetched Mercator grid to DTM",
+    grid = TRUE
+  ),
+  list(
     label = "error path: paths without destinations",
     request = list(
       analysis = "paths", dtmPath = dtm_path, originPath = origin_path,
@@ -147,6 +151,38 @@ cases <- list(
 
 failures <- 0
 for (case in cases) {
+  if (isTRUE(case$grid)) {
+    # The browser hands over a Float32 grid in Web Mercator; the engine must turn
+    # it into a UTM GeoTIFF with a sensible cell size and elevation range.
+    gw <- 96; gh <- 80
+    xs <- seq(0, 1, length.out = gw); ys <- seq(0, 1, length.out = gh)
+    z <- outer(ys, xs, function(y, x) 200 + 900 * exp(-((x - 0.5)^2 + (y - 0.5)^2) / 0.05))
+    grid_path <- file.path(outdir, "grid.bin")
+    writeBin(as.numeric(t(z)), grid_path, size = 4, endian = "little")
+    # Roughly the Vesuvius box, in EPSG:3857 metres.
+    req_path <- file.path(outdir, "req-grid.json")
+    write_json(list(
+      gridPath = grid_path, width = gw, height = gh, crs = "EPSG:3857",
+      xmin = 1597000, xmax = 1608000, ymin = 4970000, ymax = 4980000,
+      zoom = 11, outPath = file.path(outdir, "grid-dem.tif")
+    ), req_path, auto_unbox = TRUE)
+    t0 <- Sys.time()
+    resp <- fromJSON(mcx_grid_to_dtm(req_path), simplifyVector = FALSE)
+    secs <- round(as.numeric(difftime(Sys.time(), t0, units = "secs")), 1)
+    ok <- isTRUE(resp$ok) && file.exists(resp$path) &&
+      grepl("^EPSG:326", resp$crs) &&
+      resp$resolution > 60 && resp$resolution < 120 &&   # ~114 m Mercator * cos(40.8°) ≈ 87 m
+      resp$elevation$min > 150 && resp$elevation$max < 1150
+    cat(sprintf(
+      "[%s] %-38s %ss  %s\n", if (ok) "PASS" else "FAIL", case$label, secs,
+      if (isTRUE(resp$ok)) sprintf("%s %dx%d at %.1f m, %.0f-%.0f m", resp$crs, resp$width,
+                                   resp$height, resp$resolution, resp$elevation$min, resp$elevation$max)
+      else resp$error
+    ))
+    if (!ok) failures <- failures + 1
+    next
+  }
+
   if (isTRUE(case$preview)) {
     req_path <- file.path(outdir, "req-preview.json")
     write_json(list(dtmPath = dtm_path), req_path, auto_unbox = TRUE)

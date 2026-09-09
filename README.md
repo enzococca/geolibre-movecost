@@ -95,9 +95,11 @@ Restart GeoLibre and enable **movecost** in *Manage Plugins*.
 1. Open the panel from the map button (top-right) or the *movecost* toolbar menu.
 2. Get a **DTM**. Two ways, in the order the panel offers them:
    - **Draw an area and download a DEM** — draw a polygon (or press *Use current
-     view*), pick a detail level, and elevation comes from the AWS terrain tiles
-     via `elevatr`, projected to the right UTM zone. A 10 × 8 km area at
-     ~29 m/cell arrives in about 3 seconds.
+     view*), pick a detail level, and elevation comes from the AWS terrain
+     dataset, projected to the right UTM zone. With the R service it goes
+     through `elevatr`; in the browser the page fetches the Terrarium tiles
+     itself and R only projects the grid, so this works on an iPad with no R
+     anywhere. A 10 × 8 km area at ~29 m/cell arrives in a few seconds either way.
 
      *Download DEM* fetches it once and keeps it, which is what you want as soon
      as you compare cost functions on the same terrain. *Use area directly* skips
