@@ -155,7 +155,20 @@ export function viewportPolygon(
   } catch {
     bounds = null;
   }
-  if (!bounds) return null;
+  // `getViewBounds` arrived after GeoLibre 2.9.0; older hosts still hand over
+  // the MapLibre map, whose own bounds serve the same purpose on a flat map.
+  if (!bounds) {
+    try {
+      const raw = app.getMap?.()?.getBounds?.();
+      const arr = raw?.toArray?.();
+      if (arr && arr.length === 2) {
+        bounds = [arr[0][0], arr[0][1], arr[1][0], arr[1][1]];
+      }
+    } catch {
+      bounds = null;
+    }
+  }
+  if (!bounds || !bounds.every((v) => Number.isFinite(v))) return null;
   const [west, south, east, north] = bounds;
   return {
     bounds,

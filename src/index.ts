@@ -1,5 +1,6 @@
 import "./styles.css";
 import { MovecostPanel } from "./ui/panel";
+import { PLUGIN_VERSION } from "./version";
 import type {
   GeoLibreAppAPI,
   GeoLibrePlugin,
@@ -9,7 +10,7 @@ import type {
 
 const PLUGIN_ID = "movecost";
 const PANEL_ID = "movecost-panel";
-const VERSION = "0.1.4";
+const VERSION = PLUGIN_VERSION;
 
 /**
  * A map-corner button that opens the workspace panel.

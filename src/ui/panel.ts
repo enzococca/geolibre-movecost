@@ -27,6 +27,7 @@ import {
   type HostLayerHandle,
 } from "../map/host-layers";
 import { DESTINATION_STYLE, ORIGIN_STYLE, resultStyle } from "../map/styles";
+import { PLUGIN_VERSION } from "../version";
 import {
   boundsOf,
   emptyPointSet,
@@ -391,7 +392,7 @@ export class MovecostPanel {
       { class: "mcx-section mcx-section--intro" },
       el("p", {
         class: "mcx-intro",
-        text: "Slope-dependent cost analysis with the movecost R package.",
+        text: `Slope-dependent cost analysis with the movecost R package. Plugin ${PLUGIN_VERSION}.`,
       }),
       el(
         "div",
@@ -513,7 +514,7 @@ export class MovecostPanel {
         }, "primary"),
       );
     }
-    if (this.app.getViewBounds) {
+    if (this.app.getViewBounds || this.app.getMap?.()) {
       actions.append(
         button("Use current view", () => {
           const view = viewportPolygon(this.app);

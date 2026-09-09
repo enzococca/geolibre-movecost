@@ -96,6 +96,7 @@ export interface MapLibreLike {
   getPaintProperty?: (layerId: string, name: string) => unknown;
   moveLayer?: (layerId: string, beforeId?: string) => void;
   getLayersOrder?: () => string[];
+  getBounds?: () => { toArray?: () => [[number, number], [number, number]] } | null;
   on: (type: string, listener: (event: MapMouseEventLike) => void) => void;
   off: (type: string, listener: (event: MapMouseEventLike) => void) => void;
   getCanvas: () => HTMLCanvasElement;

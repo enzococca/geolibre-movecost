@@ -11,7 +11,7 @@
 
 import { createWriteStream } from "node:fs";
 import { mkdir, readFile, rm, writeFile, cp } from "node:fs/promises";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { execFile } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -52,6 +52,14 @@ async function main() {
   }
 
   const pkg = JSON.parse(await readFile(join(root, "package.json"), "utf8"));
+  const versionTs = readFileSync(join(root, "src/version.ts"), "utf8");
+  const exported = /PLUGIN_VERSION = "([^"]+)"/.exec(versionTs)?.[1];
+  if (exported !== manifest.version) {
+    throw new Error(
+      `Version mismatch: src/version.ts exports ${exported}, plugin.json says ${manifest.version}. ` +
+        `The host rejects a bundle whose exported version does not match its manifest.`,
+    );
+  }
   if (manifest.version !== pkg.version) {
     throw new Error(
       `Version mismatch: plugin.json says ${manifest.version}, package.json says ${pkg.version}. ` +
