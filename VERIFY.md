@@ -21,6 +21,14 @@ GeoLibre window itself.
 | GeoLibre Desktop CSP allows `http://127.0.0.1:*` in `connect-src` | ✅ |
 | In-browser webR backend | ❌ blocked upstream — see docs/WEBR-FINDINGS.md |
 
+## On iPad and Android
+
+Do not use *Choose .zip*: on every Tauri build it asks the native picker for a
+file *path* and has the Rust side copy it, which the mobile sandbox refuses —
+the UI then shows the generic "Impossibile installare il plugin". Use
+*Manifest URLs* with an https host (`scripts/serve-plugin.sh --tunnel` for a
+quick one, `scripts/publish-pages.sh` + GitHub Pages for a permanent one).
+
 ## What you need to check in GeoLibre
 
 The plugin is already installed at

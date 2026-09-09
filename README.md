@@ -56,8 +56,18 @@ npm install
 npm run package          # -> build/movecost-0.1.0.zip, then checks it
 ```
 
-Open GeoLibre → *Manage Plugins* → install from the zip. Works on desktop and
-mobile; extra plugin folders are desktop-only.
+Open GeoLibre → *Manage Plugins* → install from the zip. **Desktop only**: on
+iPad and Android the zip route fails with a generic "could not install",
+because it hands the native file picker's path to a Rust command that the
+mobile sandbox will not let read. Mobile installs go by manifest URL instead:
+
+```bash
+bash scripts/serve-plugin.sh --tunnel     # temporary https URL for testing
+bash scripts/publish-pages.sh             # gh-pages branch for a permanent one
+```
+
+then *Manage Plugins → Settings → Manifest URLs* → paste
+`https://<host>/plugin.json` → Add. That route also works on desktop.
 
 `npm run package` runs `scripts/check-plugin-zip.py` on the result, which applies
 GeoLibre's own install-time rules — where the manifest may sit, which fields are
