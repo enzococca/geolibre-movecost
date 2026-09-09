@@ -6209,7 +6209,7 @@ class MovecostPanel {
 }
 const PLUGIN_ID = "movecost";
 const PANEL_ID = "movecost-panel";
-const VERSION = "0.1.3";
+const VERSION = "0.1.4";
 class MovecostControl {
   constructor(onToggle) {
     this.onToggle = onToggle;
