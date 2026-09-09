@@ -1,0 +1,38 @@
+{
+ "type": "FeatureCollection",
+ "features": [
+  {
+   "type": "Feature",
+   "geometry": {
+    "type": "Polygon",
+    "coordinates": [
+     [
+      [
+       14.32,
+       40.72
+      ],
+      [
+       14.52,
+       40.72
+      ],
+      [
+       14.52,
+       40.84
+      ],
+      [
+       14.32,
+       40.84
+      ],
+      [
+       14.32,
+       40.72
+      ]
+     ]
+    ]
+   },
+   "properties": {
+    "name": "Vesuvius study area"
+   }
+  }
+ ]
+}

@@ -1,0 +1,33 @@
+{
+ "type": "FeatureCollection",
+ "features": [
+  {
+   "type": "Feature",
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     14.3478,
+     40.806
+    ]
+   },
+   "properties": {
+    "name": "Herculaneum",
+    "site": "Herculaneum"
+   }
+  },
+  {
+   "type": "Feature",
+   "geometry": {
+    "type": "Point",
+    "coordinates": [
+     14.4528,
+     40.7573
+    ]
+   },
+   "properties": {
+    "name": "Villa Poppaea (Oplontis)",
+    "site": "Oplontis"
+   }
+  }
+ ]
+}
