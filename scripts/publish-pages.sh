@@ -31,23 +31,39 @@ cp dist/index.js dist/style.css "$SITE/dist/"
 [ -d build/wasm-repo ] && cp -R build/wasm-repo "$SITE/wasm-repo"
 touch "$SITE/.nojekyll"   # Pages must not run Jekyll over the repository tree
 
-# A second copy of the manifest under a versioned name. GeoLibre pins the
-# bundle hash per manifest URL and, on the mobile builds, a plugin held back
-# by a changed hash can be neither reloaded nor un-pinned by removing the URL
-# (the pin is only dropped for a plugin that was actually loaded). A URL nobody
-# has used before carries no pin, so each release gets one of its own;
-# `plugin.json` stays the stable address for the registry and the desktop.
+# A second copy of the manifest, and of the bundle, under names unique to this
+# build. GeoLibre pins the bundle hash per manifest URL and, on the mobile
+# builds, a plugin held back by a changed hash can be neither reloaded nor
+# un-pinned by removing the URL (the pin is only dropped for a plugin that was
+# loaded). And the WebView caches `dist/index.js` by URL, so a new manifest
+# pointing at the same entry path can still load the previous bundle. A
+# manifest AND an entry nobody has fetched before sidestep both: each publish
+# gets `plugin-<version>-<hash>.json` → `dist/index-<hash>.js`. `plugin.json`
+# stays the stable address for the registry and the desktop.
 VERSION=$(python3 -c "import json;print(json.load(open('geolibre-plugin/plugin.json'))['version'])")
-cp geolibre-plugin/plugin.json "$SITE/plugin-$VERSION.json"
+BUILD=$(python3 -c "import hashlib;print(hashlib.sha256(open('dist/index.js','rb').read()).hexdigest()[:8])")
+cp dist/index.js "$SITE/dist/index-$BUILD.js"
+cp dist/style.css "$SITE/dist/style-$BUILD.css"
+python3 - "$SITE" "$VERSION" "$BUILD" <<'PY'
+import json, sys
+site, version, build = sys.argv[1:]
+m = json.load(open("geolibre-plugin/plugin.json"))
+m["entry"] = f"dist/index-{build}.js"
+m["style"] = f"dist/style-{build}.css"
+with open(f"{site}/plugin-{version}-{build}.json", "w") as f:
+    json.dump(m, f, indent=2, ensure_ascii=False); f.write("\n")
+PY
+VERSIONED="plugin-$VERSION-$BUILD.json"
 
 cat > "$SITE/index.html" <<HTML
 <!doctype html><meta charset="utf-8"><title>movecost for GeoLibre</title>
 <p>Plugin manifest: <a href="plugin.json">plugin.json</a> — paste that URL into
 GeoLibre → Manage Plugins → Settings → Manifest URLs.</p>
 <p>On iPad or Android, where an updated plugin cannot be re-accepted, use the
-versioned manifest instead — remove the old URL and add
-<a href="plugin-$VERSION.json">plugin-$VERSION.json</a>.</p>
+manifest of this build instead — remove the old URL and add
+<a href="$VERSIONED">$VERSIONED</a> (version $VERSION, build $BUILD).</p>
 HTML
+echo "Versioned manifest: $VERSIONED"
 
 WORK="$PWD/build/gh-pages-worktree"
 rm -rf "$WORK"

@@ -74,12 +74,13 @@ of the bundle it first loaded from a URL and refuses to run a changed one until
 it is reloaded and accepted from Settings → Plugins. On the mobile builds a
 plugin held back that way shows no reload control, and removing and re-adding
 the same URL does not clear the pin (it is only dropped for a plugin that was
-loaded). The site therefore also publishes each release under a versioned
-name — `plugin-<version>.json`, e.g.
-`https://enzococca.github.io/geolibre-movecost/plugin-0.1.3.json` — which no
-device has seen before: remove the old URL, add the versioned one, and the
-plugin loads with a fresh trust prompt. The unversioned `plugin.json` remains
-the stable address for the desktop and the registry.
+loaded), and the WebView caches `dist/index.js` by URL, so even a new manifest
+can load the old bundle. The site therefore publishes every build under names
+nobody has fetched before — `plugin-<version>-<build>.json`, pointing at
+`dist/index-<build>.js` — and the site's index page links the current one:
+remove the old URL, add that one, and the plugin loads with a fresh trust
+prompt. The unversioned `plugin.json` remains the stable address for the
+desktop and the registry.
 
 `npm run package` runs `scripts/check-plugin-zip.py` on the result, which applies
 GeoLibre's own install-time rules — where the manifest may sit, which fields are
