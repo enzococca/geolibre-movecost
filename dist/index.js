@@ -2931,6 +2931,112 @@ mcx_fetch_dem <- function(request_path, response_path = NULL) {
   invisible(response_path)
 }
 
+#' Turn an elevation grid fetched in the browser into a projected DTM.
+#'
+#' The JavaScript side downloads AWS Terrarium tiles and decodes them into a
+#' Float32 grid in Web Mercator (EPSG:3857). Slope on a Mercator grid would be
+#' wrong by 1/cos(latitude), so the grid is reprojected to the UTM zone of its
+#' centroid here, optionally masked to the drawn area, and written as a GeoTIFF
+#' — after which it is indistinguishable from an uploaded or elevatr-fetched DTM.
+#'
+#' @param request_path JSON with \`gridPath\` (raw little-endian Float32, row-major
+#'   from the top-left), \`width\`, \`height\`, \`xmin\`/\`ymin\`/\`xmax\`/\`ymax\` in the
+#'   grid CRS, \`crs\` (default EPSG:3857), optional \`areaPath\` and \`outPath\`
+mcx_grid_to_dtm <- function(request_path, response_path = NULL) {
+  mcx_env$log <- character(0)
+  started <- Sys.time()
+  if (is.null(response_path)) {
+    response_path <- paste0(tools::file_path_sans_ext(request_path), ".response.json")
+  }
+
+  out <- tryCatch(
+    {
+      req <- jsonlite::fromJSON(request_path, simplifyVector = TRUE)
+      width <- as.integer(req$width)
+      height <- as.integer(req$height)
+      if (is.na(width) || is.na(height) || width < 2 || height < 2) {
+        mcx_stop("The elevation grid must be at least 2 x 2 cells.")
+      }
+      if (is.null(req$gridPath) || !file.exists(req$gridPath)) {
+        mcx_stop("The elevation grid file is missing.")
+      }
+      expected <- as.numeric(width) * height
+      n_bytes <- file.info(req$gridPath)$size
+      if (n_bytes != expected * 4) {
+        mcx_stop("The elevation grid has ", n_bytes, " bytes; expected ",
+                 expected * 4, " for ", width, " x ", height, " Float32 cells.")
+      }
+
+      values <- readBin(req$gridPath, what = "numeric", n = expected, size = 4,
+                        endian = "little")
+      values[is.nan(values)] <- NA_real_
+      grid_crs <- mcx_pick(req, "crs", "EPSG:3857")
+
+      r <- terra::rast(matrix(values, nrow = height, ncol = width, byrow = TRUE),
+                       crs = grid_crs)
+      terra::ext(r) <- terra::ext(req$xmin, req$xmax, req$ymin, req$ymax)
+
+      centre <- sf::st_sfc(sf::st_point(c((req$xmin + req$xmax) / 2,
+                                          (req$ymin + req$ymax) / 2)),
+                           crs = sf::st_crs(grid_crs))
+      lonlat <- sf::st_coordinates(sf::st_transform(centre, 4326))
+      epsg <- mcx_utm_epsg(lonlat[1, 1], lonlat[1, 2])
+      mcx_log("Projecting a ", width, " x ", height, " grid from ", grid_crs,
+              " to EPSG:", epsg)
+
+      # Keep the cell size the tiles actually had at this latitude, rather than
+      # terra's default guess, so the DTM resolution matches the zoom chosen.
+      mercator_res <- (req$xmax - req$xmin) / width
+      true_res <- mercator_res * cos(lonlat[1, 2] * pi / 180)
+      r <- terra::project(r, paste0("EPSG:", epsg), method = "bilinear",
+                          res = true_res)
+
+      area_path <- mcx_pick(req, "areaPath", NULL)
+      if (!is.null(area_path) && file.exists(area_path)) {
+        area <- sf::st_read(area_path, quiet = TRUE)
+        if (nrow(area) > 0) {
+          if (is.na(sf::st_crs(area))) sf::st_crs(area) <- 4326
+          area <- sf::st_transform(sf::st_make_valid(sf::st_union(area)), paste0("EPSG:", epsg))
+          area_v <- terra::vect(sf::st_as_sf(sf::st_sfc(area, crs = sf::st_crs(paste0("EPSG:", epsg)))))
+          r <- terra::mask(terra::crop(r, area_v), area_v)
+        }
+      }
+      names(r) <- "dtm"
+
+      out_path <- mcx_pick(req, "outPath", NULL)
+      if (is.null(out_path)) out_path <- file.path(dirname(request_path), "dem.tif")
+      terra::writeRaster(r, out_path, overwrite = TRUE, gdal = c("COMPRESS=DEFLATE"))
+
+      e84 <- terra::ext(terra::project(r, "EPSG:4326"))
+      finite <- terra::values(r, mat = FALSE)
+      finite <- finite[!is.na(finite)]
+
+      list(
+        ok = TRUE,
+        path = out_path,
+        bytes = file.info(out_path)$size,
+        crs = paste0("EPSG:", epsg),
+        zoom = mcx_pick(req, "zoom", NA_integer_),
+        width = terra::ncol(r),
+        height = terra::nrow(r),
+        resolution = as.numeric(terra::res(r))[1],
+        elevation = list(
+          min = if (length(finite)) min(finite) else NA_real_,
+          max = if (length(finite)) max(finite) else NA_real_
+        ),
+        bounds = list(west = e84$xmin, south = e84$ymin, east = e84$xmax, north = e84$ymax),
+        elapsedSeconds = as.numeric(difftime(Sys.time(), started, units = "secs")),
+        log = mcx_env$log
+      )
+    },
+    error = function(e) list(ok = FALSE, error = conditionMessage(e), log = mcx_env$log)
+  )
+
+  jsonlite::write_json(out, response_path, auto_unbox = TRUE, null = "null",
+                       na = "null", digits = 8)
+  invisible(response_path)
+}
+
 #' Summarise a DTM for display on the map.
 #'
 #' Returns the same raster payload shape the analyses use, so the plugin can
@@ -3150,6 +3256,192 @@ function readOverride$1(key) {
     return null;
   }
 }
+function parseDemSummary(raw) {
+  const scalar = (value) => Array.isArray(value) ? value[0] : value;
+  const elevation = raw.elevation ?? {};
+  const b2 = raw.bounds ?? {};
+  return {
+    crs: String(scalar(raw.crs)),
+    zoom: Number(scalar(raw.zoom)),
+    width: Number(scalar(raw.width)),
+    height: Number(scalar(raw.height)),
+    resolution: Number(scalar(raw.resolution)),
+    bytes: Number(scalar(raw.bytes)),
+    elapsedSeconds: Number(scalar(raw.elapsedSeconds)),
+    elevation: { min: Number(scalar(elevation.min)), max: Number(scalar(elevation.max)) },
+    bounds: {
+      west: Number(scalar(b2.west)),
+      south: Number(scalar(b2.south)),
+      east: Number(scalar(b2.east)),
+      north: Number(scalar(b2.north))
+    }
+  };
+}
+const DEFAULT_BACKEND_URL = readOverride("MOVECOST_BACKEND_URL") ?? "http://127.0.0.1:8787";
+function readOverride(key) {
+  try {
+    const value = globalThis.localStorage?.getItem(key);
+    return value && value.trim() ? value.trim().replace(/\/$/, "") : null;
+  } catch {
+    return null;
+  }
+}
+async function probeBackend(url = DEFAULT_BACKEND_URL, timeoutMs = 1500) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(`${url}/health`, {
+      signal: controller.signal,
+      cache: "no-store"
+    });
+    if (!response.ok) return null;
+    const health = await response.json();
+    return health?.ok ? health : null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+class HttpBackend {
+  constructor(url = DEFAULT_BACKEND_URL, versions = null) {
+    this.url = url;
+    this.versions = versions;
+  }
+  id = "local-r";
+  listeners = /* @__PURE__ */ new Set();
+  get label() {
+    const movecost = this.versions?.movecost;
+    return movecost ? `Local R service (movecost ${movecost})` : "Local R service";
+  }
+  onProgress(listener) {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+  emit(phase, message, fraction = null) {
+    for (const listener of this.listeners) {
+      try {
+        listener({ phase, message, fraction });
+      } catch {
+      }
+    }
+  }
+  async run(request, inputs) {
+    const form = new FormData();
+    if (inputs.dtm) {
+      form.append("dtm", new Blob([inputs.dtm], { type: "image/tiff" }), "dtm.tif");
+    }
+    if (inputs.studyplot) form.append("studyplot", inputs.studyplot);
+    form.append("origin", inputs.origin);
+    if (inputs.destin) form.append("destin", inputs.destin);
+    if (inputs.barrier) form.append("barrier", inputs.barrier);
+    form.append("request", JSON.stringify(request));
+    this.emit(
+      "running",
+      inputs.dtm ? `Running the ${request.analysis} analysis on the local R service…` : `Downloading elevation, then running the ${request.analysis} analysis…`,
+      null
+    );
+    let response;
+    try {
+      response = await fetch(`${this.url}/run`, { method: "POST", body: form });
+    } catch (error) {
+      this.emit("error", "The local R service stopped responding.");
+      return {
+        ok: false,
+        error: `Could not reach the local R service at ${this.url}. Start it with "Rscript r-backend/start.R" from the plugin project. (${error instanceof Error ? error.message : String(error)})`
+      };
+    }
+    let payload;
+    try {
+      payload = await response.json();
+    } catch {
+      this.emit("error", "The local R service returned something that is not JSON.");
+      return {
+        ok: false,
+        error: `The local R service replied with HTTP ${response.status} and a body that is not JSON.`
+      };
+    }
+    this.emit(payload.ok ? "done" : "error", payload.ok ? "Analysis complete." : payload.error, 1);
+    return payload;
+  }
+  async fetchDem(areaGeoJson, zoom) {
+    const form = new FormData();
+    form.append("area", areaGeoJson);
+    form.append("zoom", String(zoom));
+    this.emit("running", `Downloading elevation tiles at zoom ${zoom}…`, null);
+    const response = await fetch(`${this.url}/dem`, { method: "POST", body: form });
+    if (!response.ok) {
+      let detail = `HTTP ${response.status}`;
+      try {
+        const body = await response.json();
+        if (body?.error) detail = body.error;
+      } catch {
+      }
+      this.emit("error", detail, 1);
+      throw new Error(detail);
+    }
+    const header = response.headers.get("X-Movecost-Summary");
+    if (!header) {
+      throw new Error(
+        "The DEM came back without its summary header. The R service may be an older version."
+      );
+    }
+    const summary = parseDemSummary(JSON.parse(header));
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    this.emit("done", `Downloaded a ${summary.width} x ${summary.height} DEM.`, 1);
+    return { bytes, summary };
+  }
+  async dtmFromGrid(grid, areaGeoJson) {
+    const form = new FormData();
+    const bytes = new Uint8Array(grid.data.buffer, grid.data.byteOffset, grid.data.byteLength);
+    form.append("grid", new Blob([bytes], { type: "application/octet-stream" }), "grid.bin");
+    form.append(
+      "meta",
+      JSON.stringify({
+        width: grid.width,
+        height: grid.height,
+        crs: grid.crs,
+        zoom: grid.zoom,
+        xmin: grid.xmin,
+        ymin: grid.ymin,
+        xmax: grid.xmax,
+        ymax: grid.ymax
+      })
+    );
+    if (areaGeoJson) form.append("area", areaGeoJson);
+    this.emit("running", "Projecting the elevation grid…", null);
+    const response = await fetch(`${this.url}/grid`, { method: "POST", body: form });
+    if (!response.ok) {
+      let detail = `HTTP ${response.status}`;
+      try {
+        const body = await response.json();
+        if (body?.error) detail = body.error;
+      } catch {
+      }
+      this.emit("error", detail, 1);
+      throw new Error(detail);
+    }
+    const header = response.headers.get("X-Movecost-Summary");
+    if (!header) throw new Error("The DTM came back without its summary header.");
+    const summary = parseDemSummary(JSON.parse(header));
+    const tif = new Uint8Array(await response.arrayBuffer());
+    this.emit("done", `Built a ${summary.width} x ${summary.height} DTM.`, 1);
+    return { bytes: tif, summary };
+  }
+  async previewDtm(dtm) {
+    const form = new FormData();
+    form.append("dtm", new Blob([dtm], { type: "image/tiff" }), "dtm.tif");
+    const response = await fetch(`${this.url}/preview`, { method: "POST", body: form });
+    const payload = await response.json();
+    if (!response.ok || !payload.ok) {
+      throw new Error(payload.error ?? `HTTP ${response.status}`);
+    }
+    return payload;
+  }
+  async close() {
+    this.listeners.clear();
+  }
+}
 const WORK_DIR = "/movecost";
 const ENGINE_PATH = `${WORK_DIR}/movecost-engine.R`;
 class MovecostEngine {
@@ -3294,6 +3586,66 @@ class MovecostEngine {
     this.emit(response.ok ? "done" : "error", response.ok ? "Analysis complete." : response.error, 1);
     return response;
   }
+  /**
+   * The in-browser route to terrain for a drawn area: the page fetches the
+   * tiles, R turns the grid into a UTM GeoTIFF. Serialised through the queue
+   * like an analysis, since it shares the R session.
+   */
+  dtmFromGrid(grid, areaGeoJson) {
+    const task = this.queue.then(
+      () => this.gridNow(grid, areaGeoJson),
+      () => this.gridNow(grid, areaGeoJson)
+    );
+    this.queue = task.catch(() => void 0);
+    return task;
+  }
+  async gridNow(grid, areaGeoJson) {
+    const webR = await this.boot();
+    const dir = `${WORK_DIR}/grid-${++this.requestCounter}`;
+    await ensureDir(webR, dir);
+    const encoder = new TextEncoder();
+    const gridPath = `${dir}/grid.bin`;
+    const areaPath = areaGeoJson ? `${dir}/area.geojson` : null;
+    const outPath = `${dir}/dem.tif`;
+    const requestPath = `${dir}/grid.json`;
+    const responsePath = `${dir}/grid.response.json`;
+    this.emit("running", "Projecting the elevation grid…", null);
+    await webR.FS.writeFile(
+      gridPath,
+      new Uint8Array(grid.data.buffer, grid.data.byteOffset, grid.data.byteLength)
+    );
+    if (areaPath) await webR.FS.writeFile(areaPath, encoder.encode(areaGeoJson));
+    await webR.FS.writeFile(
+      requestPath,
+      encoder.encode(JSON.stringify({
+        gridPath,
+        areaPath,
+        outPath,
+        width: grid.width,
+        height: grid.height,
+        crs: grid.crs,
+        zoom: grid.zoom,
+        xmin: grid.xmin,
+        ymin: grid.ymin,
+        xmax: grid.xmax,
+        ymax: grid.ymax
+      }))
+    );
+    await webR.evalRVoid(`mcx_grid_to_dtm(${rString(requestPath)})`);
+    const raw = JSON.parse(
+      new TextDecoder().decode(await webR.FS.readFile(responsePath))
+    );
+    if (!raw.ok) {
+      await cleanupDir(webR, dir);
+      this.emit("error", raw.error ?? "The grid could not be projected.", 1);
+      throw new Error(raw.error ?? "The grid could not be projected.");
+    }
+    const bytes = await webR.FS.readFile(outPath);
+    await cleanupDir(webR, dir);
+    const summary = parseDemSummary(raw);
+    this.emit("done", `Built a ${summary.width} x ${summary.height} DTM.`, 1);
+    return { bytes: new Uint8Array(bytes), summary };
+  }
   /** Same preview the HTTP backend serves, computed in the page instead. */
   async previewDtm(dtm) {
     const webR = await this.boot();
@@ -3362,156 +3714,261 @@ function describeError(error) {
     return String(error);
   }
 }
-const DEFAULT_BACKEND_URL = readOverride("MOVECOST_BACKEND_URL") ?? "http://127.0.0.1:8787";
-function readOverride(key) {
+function emptyPointSet(kind = "click", label = "None") {
+  return { kind, label, features: [] };
+}
+function toFeatureCollection(features) {
+  return { type: "FeatureCollection", features };
+}
+function pointsToGeoJson(features, idPrefix) {
+  const withIds = features.map((feature, index) => ({
+    ...feature,
+    properties: {
+      ...feature.properties ?? {},
+      mcx_id: `${idPrefix}${index + 1}`
+    }
+  }));
+  return JSON.stringify(toFeatureCollection(withIds));
+}
+function isPoint(feature) {
+  const type = feature.geometry?.type;
+  return type === "Point" || type === "MultiPoint";
+}
+function keepPoints(features) {
+  return features.filter(isPoint);
+}
+function keepLinesAndPolygons(features) {
+  return features.filter((f2) => {
+    const type = f2.geometry?.type ?? "";
+    return type.includes("Line") || type.includes("Polygon");
+  });
+}
+function readSelection(app) {
   try {
-    const value = globalThis.localStorage?.getItem(key);
-    return value && value.trim() ? value.trim().replace(/\/$/, "") : null;
+    return app.getSelectedFeatures?.() ?? [];
   } catch {
-    return null;
+    return [];
   }
 }
-async function probeBackend(url = DEFAULT_BACKEND_URL, timeoutMs = 1500) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+function readDrawings(app) {
   try {
-    const response = await fetch(`${url}/health`, {
-      signal: controller.signal,
-      cache: "no-store"
-    });
-    if (!response.ok) return null;
-    const health = await response.json();
-    return health?.ok ? health : null;
+    return app.getDrawnFeatures?.() ?? [];
   } catch {
-    return null;
-  } finally {
-    clearTimeout(timer);
+    return [];
   }
 }
-class HttpBackend {
-  constructor(url = DEFAULT_BACKEND_URL, versions = null) {
-    this.url = url;
-    this.versions = versions;
+function readLayer(app, layerId) {
+  try {
+    return app.getLayerFeatures?.(layerId) ?? [];
+  } catch {
+    return [];
   }
-  id = "local-r";
-  listeners = /* @__PURE__ */ new Set();
-  get label() {
-    const movecost = this.versions?.movecost;
-    return movecost ? `Local R service (movecost ${movecost})` : "Local R service";
+}
+function listVectorLayers(app) {
+  try {
+    return app.listLayers?.() ?? [];
+  } catch {
+    return [];
   }
-  onProgress(listener) {
-    this.listeners.add(listener);
-    return () => this.listeners.delete(listener);
+}
+function startPointPicking(app, onPoint) {
+  const map = app.getMap?.() ?? null;
+  if (!map) return null;
+  const handler = (event) => {
+    event.preventDefault?.();
+    onPoint(event.lngLat.lng, event.lngLat.lat);
+  };
+  map.on("click", handler);
+  let cursor = "";
+  try {
+    const canvas = map.getCanvas();
+    cursor = canvas.style.cursor;
+    canvas.style.cursor = "crosshair";
+  } catch {
   }
-  emit(phase, message, fraction = null) {
-    for (const listener of this.listeners) {
+  return {
+    stop: () => {
+      map.off("click", handler);
       try {
-        listener({ phase, message, fraction });
+        map.getCanvas().style.cursor = cursor;
       } catch {
       }
     }
+  };
+}
+function makePointFeature(lng, lat, id) {
+  return {
+    type: "Feature",
+    geometry: { type: "Point", coordinates: [lng, lat] },
+    properties: { mcx_id: id }
+  };
+}
+function keepPolygons(features) {
+  return features.filter((f2) => (f2.geometry?.type ?? "").includes("Polygon"));
+}
+function viewportPolygon(app) {
+  let bounds = null;
+  try {
+    bounds = app.getViewBounds?.() ?? null;
+  } catch {
+    bounds = null;
   }
-  async run(request, inputs) {
-    const form = new FormData();
-    if (inputs.dtm) {
-      form.append("dtm", new Blob([inputs.dtm], { type: "image/tiff" }), "dtm.tif");
-    }
-    if (inputs.studyplot) form.append("studyplot", inputs.studyplot);
-    form.append("origin", inputs.origin);
-    if (inputs.destin) form.append("destin", inputs.destin);
-    if (inputs.barrier) form.append("barrier", inputs.barrier);
-    form.append("request", JSON.stringify(request));
-    this.emit(
-      "running",
-      inputs.dtm ? `Running the ${request.analysis} analysis on the local R service…` : `Downloading elevation, then running the ${request.analysis} analysis…`,
-      null
-    );
-    let response;
-    try {
-      response = await fetch(`${this.url}/run`, { method: "POST", body: form });
-    } catch (error) {
-      this.emit("error", "The local R service stopped responding.");
-      return {
-        ok: false,
-        error: `Could not reach the local R service at ${this.url}. Start it with "Rscript r-backend/start.R" from the plugin project. (${error instanceof Error ? error.message : String(error)})`
-      };
-    }
-    let payload;
-    try {
-      payload = await response.json();
-    } catch {
-      this.emit("error", "The local R service returned something that is not JSON.");
-      return {
-        ok: false,
-        error: `The local R service replied with HTTP ${response.status} and a body that is not JSON.`
-      };
-    }
-    this.emit(payload.ok ? "done" : "error", payload.ok ? "Analysis complete." : payload.error, 1);
-    return payload;
-  }
-  async fetchDem(areaGeoJson, zoom) {
-    const form = new FormData();
-    form.append("area", areaGeoJson);
-    form.append("zoom", String(zoom));
-    this.emit("running", `Downloading elevation tiles at zoom ${zoom}…`, null);
-    const response = await fetch(`${this.url}/dem`, { method: "POST", body: form });
-    if (!response.ok) {
-      let detail = `HTTP ${response.status}`;
-      try {
-        const body = await response.json();
-        if (body?.error) detail = body.error;
-      } catch {
-      }
-      this.emit("error", detail, 1);
-      throw new Error(detail);
-    }
-    const header = response.headers.get("X-Movecost-Summary");
-    if (!header) {
-      throw new Error(
-        "The DEM came back without its summary header. The R service may be an older version."
-      );
-    }
-    const raw = JSON.parse(header);
-    const scalar = (value) => Array.isArray(value) ? value[0] : value;
-    const summary = {
-      crs: String(scalar(raw.crs)),
-      zoom: Number(scalar(raw.zoom)),
-      width: Number(scalar(raw.width)),
-      height: Number(scalar(raw.height)),
-      resolution: Number(scalar(raw.resolution)),
-      bytes: Number(scalar(raw.bytes)),
-      elapsedSeconds: Number(scalar(raw.elapsedSeconds)),
-      elevation: {
-        min: Number(scalar(raw.elevation?.min)),
-        max: Number(scalar(raw.elevation?.max))
+  if (!bounds) return null;
+  const [west, south, east, north] = bounds;
+  return {
+    bounds,
+    feature: {
+      type: "Feature",
+      geometry: {
+        type: "Polygon",
+        coordinates: [
+          [
+            [west, south],
+            [east, south],
+            [east, north],
+            [west, north],
+            [west, south]
+          ]
+        ]
       },
-      bounds: (() => {
-        const b2 = raw.bounds;
-        return {
-          west: Number(scalar(b2?.west)),
-          south: Number(scalar(b2?.south)),
-          east: Number(scalar(b2?.east)),
-          north: Number(scalar(b2?.north))
-        };
-      })()
-    };
-    const bytes = new Uint8Array(await response.arrayBuffer());
-    this.emit("done", `Downloaded a ${summary.width} x ${summary.height} DEM.`, 1);
-    return { bytes, summary };
-  }
-  async previewDtm(dtm) {
-    const form = new FormData();
-    form.append("dtm", new Blob([dtm], { type: "image/tiff" }), "dtm.tif");
-    const response = await fetch(`${this.url}/preview`, { method: "POST", body: form });
-    const payload = await response.json();
-    if (!response.ok || !payload.ok) {
-      throw new Error(payload.error ?? `HTTP ${response.status}`);
+      properties: { mcx_id: "view" }
     }
-    return payload;
+  };
+}
+function boundsOf(features) {
+  let west = Number.POSITIVE_INFINITY;
+  let south = Number.POSITIVE_INFINITY;
+  let east = Number.NEGATIVE_INFINITY;
+  let north = Number.NEGATIVE_INFINITY;
+  const visit = (coords) => {
+    if (!Array.isArray(coords)) return;
+    if (typeof coords[0] === "number" && typeof coords[1] === "number") {
+      const [x2, y2] = coords;
+      if (x2 < west) west = x2;
+      if (x2 > east) east = x2;
+      if (y2 < south) south = y2;
+      if (y2 > north) north = y2;
+      return;
+    }
+    for (const child of coords) visit(child);
+  };
+  for (const feature of features) visit(feature.geometry?.coordinates);
+  if (!Number.isFinite(west) || !Number.isFinite(south)) return null;
+  return [west, south, east, north];
+}
+function unionBounds(a, b2) {
+  if (!a) return b2;
+  if (!b2) return a;
+  return [
+    Math.min(a[0], b2[0]),
+    Math.min(a[1], b2[1]),
+    Math.max(a[2], b2[2]),
+    Math.max(a[3], b2[3])
+  ];
+}
+const TILE_SIZE = 256;
+const EARTH_RADIUS = 6378137;
+const ORIGIN_SHIFT = Math.PI * EARTH_RADIUS;
+const TILE_URL = "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png";
+const MAX_TILES = 64;
+const CONCURRENCY = 6;
+function lonToPixelX(lon, zoom) {
+  return (lon + 180) / 360 * TILE_SIZE * 2 ** zoom;
+}
+function latToPixelY(lat, zoom) {
+  const clamped = Math.max(-85.05112878, Math.min(85.05112878, lat));
+  const r13 = clamped * Math.PI / 180;
+  return (1 - Math.log(Math.tan(r13) + 1 / Math.cos(r13)) / Math.PI) / 2 * TILE_SIZE * 2 ** zoom;
+}
+function mercatorResolution(zoom) {
+  return 2 * ORIGIN_SHIFT / (TILE_SIZE * 2 ** zoom);
+}
+function decodeTerrarium(r13, g2, b2) {
+  return r13 * 256 + g2 + b2 / 256 - 32768;
+}
+async function fetchTile(z2, x2, y2) {
+  const url = TILE_URL.replace("{z}", String(z2)).replace("{x}", String(x2)).replace("{y}", String(y2));
+  const response = await fetch(url, { mode: "cors", cache: "force-cache" });
+  if (!response.ok) return null;
+  const blob = await response.blob();
+  return createImageBitmap(blob);
+}
+async function fetchTerrariumGrid(features, zoom, onProgress) {
+  const bbox = boundsOf(features);
+  if (!bbox) throw new Error("The area has no coordinates.");
+  const [west, south, east, north] = bbox;
+  if (!(east > west && north > south)) throw new Error("The area is degenerate.");
+  const px0 = Math.floor(lonToPixelX(west, zoom));
+  const px1 = Math.ceil(lonToPixelX(east, zoom));
+  const py0 = Math.floor(latToPixelY(north, zoom));
+  const py1 = Math.ceil(latToPixelY(south, zoom));
+  const tx0 = Math.floor(px0 / TILE_SIZE);
+  const tx1 = Math.floor((px1 - 1) / TILE_SIZE);
+  const ty0 = Math.floor(py0 / TILE_SIZE);
+  const ty1 = Math.floor((py1 - 1) / TILE_SIZE);
+  const tilesX = tx1 - tx0 + 1;
+  const tilesY = ty1 - ty0 + 1;
+  const total = tilesX * tilesY;
+  if (total > MAX_TILES) {
+    throw new Error(
+      `That area needs ${total} tiles at this detail level (the limit is ${MAX_TILES}). Choose a coarser level or a smaller area.`
+    );
   }
-  async close() {
-    this.listeners.clear();
+  const width = px1 - px0;
+  const height = py1 - py0;
+  const data = new Float32Array(width * height).fill(NaN);
+  const canvas = document.createElement("canvas");
+  canvas.width = TILE_SIZE;
+  canvas.height = TILE_SIZE;
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
+  if (!ctx) throw new Error("This browser refused a 2D canvas context.");
+  const jobs = [];
+  for (let ty = ty0; ty <= ty1; ty += 1) {
+    for (let tx = tx0; tx <= tx1; tx += 1) jobs.push({ tx, ty });
   }
+  let done = 0;
+  let next = 0;
+  const worker = async () => {
+    while (next < jobs.length) {
+      const job = jobs[next];
+      next += 1;
+      const bitmap = await fetchTile(zoom, job.tx, job.ty);
+      if (bitmap) {
+        ctx.clearRect(0, 0, TILE_SIZE, TILE_SIZE);
+        ctx.drawImage(bitmap, 0, 0);
+        bitmap.close();
+        const pixels = ctx.getImageData(0, 0, TILE_SIZE, TILE_SIZE).data;
+        const originX = job.tx * TILE_SIZE - px0;
+        const originY = job.ty * TILE_SIZE - py0;
+        for (let row = 0; row < TILE_SIZE; row += 1) {
+          const gy = originY + row;
+          if (gy < 0 || gy >= height) continue;
+          for (let col = 0; col < TILE_SIZE; col += 1) {
+            const gx = originX + col;
+            if (gx < 0 || gx >= width) continue;
+            const o = (row * TILE_SIZE + col) * 4;
+            data[gy * width + gx] = decodeTerrarium(pixels[o], pixels[o + 1], pixels[o + 2]);
+          }
+        }
+      }
+      done += 1;
+      onProgress?.(done, total);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, jobs.length) }, worker));
+  const res = mercatorResolution(zoom);
+  return {
+    width,
+    height,
+    data,
+    xmin: -ORIGIN_SHIFT + px0 * res,
+    xmax: -ORIGIN_SHIFT + px1 * res,
+    ymax: ORIGIN_SHIFT - py0 * res,
+    ymin: ORIGIN_SHIFT - py1 * res,
+    crs: "EPSG:3857",
+    zoom,
+    tiles: total
+  };
 }
 const COLOUR_RAMPS = [
   {
@@ -3698,158 +4155,6 @@ function renderLegend(ramp, reverse = false) {
     ctx.fillRect(x2, 0, 1, canvas.height);
   }
   return canvas;
-}
-function emptyPointSet(kind = "click", label = "None") {
-  return { kind, label, features: [] };
-}
-function toFeatureCollection(features) {
-  return { type: "FeatureCollection", features };
-}
-function pointsToGeoJson(features, idPrefix) {
-  const withIds = features.map((feature, index) => ({
-    ...feature,
-    properties: {
-      ...feature.properties ?? {},
-      mcx_id: `${idPrefix}${index + 1}`
-    }
-  }));
-  return JSON.stringify(toFeatureCollection(withIds));
-}
-function isPoint(feature) {
-  const type = feature.geometry?.type;
-  return type === "Point" || type === "MultiPoint";
-}
-function keepPoints(features) {
-  return features.filter(isPoint);
-}
-function keepLinesAndPolygons(features) {
-  return features.filter((f2) => {
-    const type = f2.geometry?.type ?? "";
-    return type.includes("Line") || type.includes("Polygon");
-  });
-}
-function readSelection(app) {
-  try {
-    return app.getSelectedFeatures?.() ?? [];
-  } catch {
-    return [];
-  }
-}
-function readDrawings(app) {
-  try {
-    return app.getDrawnFeatures?.() ?? [];
-  } catch {
-    return [];
-  }
-}
-function readLayer(app, layerId) {
-  try {
-    return app.getLayerFeatures?.(layerId) ?? [];
-  } catch {
-    return [];
-  }
-}
-function listVectorLayers(app) {
-  try {
-    return app.listLayers?.() ?? [];
-  } catch {
-    return [];
-  }
-}
-function startPointPicking(app, onPoint) {
-  const map = app.getMap?.() ?? null;
-  if (!map) return null;
-  const handler = (event) => {
-    event.preventDefault?.();
-    onPoint(event.lngLat.lng, event.lngLat.lat);
-  };
-  map.on("click", handler);
-  let cursor = "";
-  try {
-    const canvas = map.getCanvas();
-    cursor = canvas.style.cursor;
-    canvas.style.cursor = "crosshair";
-  } catch {
-  }
-  return {
-    stop: () => {
-      map.off("click", handler);
-      try {
-        map.getCanvas().style.cursor = cursor;
-      } catch {
-      }
-    }
-  };
-}
-function makePointFeature(lng, lat, id) {
-  return {
-    type: "Feature",
-    geometry: { type: "Point", coordinates: [lng, lat] },
-    properties: { mcx_id: id }
-  };
-}
-function keepPolygons(features) {
-  return features.filter((f2) => (f2.geometry?.type ?? "").includes("Polygon"));
-}
-function viewportPolygon(app) {
-  let bounds = null;
-  try {
-    bounds = app.getViewBounds?.() ?? null;
-  } catch {
-    bounds = null;
-  }
-  if (!bounds) return null;
-  const [west, south, east, north] = bounds;
-  return {
-    bounds,
-    feature: {
-      type: "Feature",
-      geometry: {
-        type: "Polygon",
-        coordinates: [
-          [
-            [west, south],
-            [east, south],
-            [east, north],
-            [west, north],
-            [west, south]
-          ]
-        ]
-      },
-      properties: { mcx_id: "view" }
-    }
-  };
-}
-function boundsOf(features) {
-  let west = Number.POSITIVE_INFINITY;
-  let south = Number.POSITIVE_INFINITY;
-  let east = Number.NEGATIVE_INFINITY;
-  let north = Number.NEGATIVE_INFINITY;
-  const visit = (coords) => {
-    if (!Array.isArray(coords)) return;
-    if (typeof coords[0] === "number" && typeof coords[1] === "number") {
-      const [x2, y2] = coords;
-      if (x2 < west) west = x2;
-      if (x2 > east) east = x2;
-      if (y2 < south) south = y2;
-      if (y2 > north) north = y2;
-      return;
-    }
-    for (const child of coords) visit(child);
-  };
-  for (const feature of features) visit(feature.geometry?.coordinates);
-  if (!Number.isFinite(west) || !Number.isFinite(south)) return null;
-  return [west, south, east, north];
-}
-function unionBounds(a, b2) {
-  if (!a) return b2;
-  if (!b2) return a;
-  return [
-    Math.min(a[0], b2[0]),
-    Math.min(a[1], b2[1]),
-    Math.max(a[2], b2[2]),
-    Math.max(a[3], b2[3])
-  ];
 }
 const ANALYSES = [
   {
@@ -4380,14 +4685,12 @@ class MovecostPanel {
   }
   /** Draw-an-area flow: pick a polygon, choose a zoom, fetch the elevation. */
   renderDemDownload() {
-    const canDownload = typeof this.backend?.fetchDem === "function";
+    const viaService = typeof this.backend?.fetchDem === "function";
+    const viaTiles = typeof this.backend?.dtmFromGrid === "function";
     const children = [];
-    if (this.backend && !canDownload) {
+    if (this.backend && !viaService && !viaTiles) {
       children.push(
-        note(
-          'Downloading elevation needs the local R service; the in-browser runtime cannot reach the tile server. Switch to "Load a GeoTIFF from disk" above.',
-          "warn"
-        )
+        note('This backend cannot fetch elevation. Switch to "Load a GeoTIFF from disk" above.', "warn")
       );
       return children;
     }
@@ -4453,7 +4756,7 @@ class MovecostPanel {
       "primary"
     );
     download.disabled = this.downloadingDem || !this.area;
-    const direct = button(
+    const direct = viaService ? button(
       this.useArea ? "Downloading per run ✓" : "Use area directly",
       () => {
         this.useArea = !this.useArea;
@@ -4464,10 +4767,20 @@ class MovecostPanel {
         this.render();
       },
       this.useArea ? "primary" : "secondary"
-    );
-    direct.disabled = !this.area;
-    direct.title = "Hand the area to movecost as its studyplot. It downloads elevation inside every run, so this is quicker for one analysis and slower for several.";
+    ) : null;
+    if (direct) {
+      direct.disabled = !this.area;
+      direct.title = "Hand the area to movecost as its studyplot. It downloads elevation inside every run, so this is quicker for one analysis and slower for several.";
+    }
     children.push(el("div", { class: "mcx-actions" }, download, direct));
+    if (!viaService && viaTiles) {
+      children.push(
+        el("p", {
+          class: "mcx-description",
+          text: "Elevation is fetched tile by tile from the AWS terrain dataset and projected in the page."
+        })
+      );
+    }
     if (this.useArea) {
       children.push(
         note(
@@ -4519,8 +4832,10 @@ class MovecostPanel {
   async downloadDem() {
     if (!this.area) return;
     const backend = await this.resolveBackend();
-    if (typeof backend.fetchDem !== "function") {
-      this.message = { text: "This backend cannot download elevation.", tone: "warn" };
+    const viaService = typeof backend.fetchDem === "function";
+    const viaTiles = typeof backend.dtmFromGrid === "function";
+    if (!viaService && !viaTiles) {
+      this.message = { text: "This backend cannot fetch elevation.", tone: "warn" };
       this.render();
       return;
     }
@@ -4529,7 +4844,23 @@ class MovecostPanel {
     this.render();
     try {
       const areaGeoJson = JSON.stringify(toFeatureCollection(this.area.features));
-      const { bytes, summary } = await backend.fetchDem(areaGeoJson, this.demZoom);
+      let result;
+      if (viaService) {
+        result = await backend.fetchDem(areaGeoJson, this.demZoom);
+      } else {
+        const tileZoom = Math.min(15, this.demZoom + 1);
+        const grid = await fetchTerrariumGrid(this.area.features, tileZoom, (done, total) => {
+          this.progress = {
+            phase: "running",
+            message: `Fetching elevation tiles… ${done}/${total}`,
+            fraction: total ? done / total : null
+          };
+          this.renderStatus();
+        });
+        result = await backend.dtmFromGrid(grid, areaGeoJson);
+        result.summary.zoom = this.demZoom;
+      }
+      const { bytes, summary } = result;
       this.dtm = { name: `DEM (zoom ${summary.zoom})`, bytes, summary };
       this.useArea = false;
       const cells = summary.width * summary.height;
