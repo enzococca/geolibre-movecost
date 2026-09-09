@@ -98,7 +98,8 @@ interface ProducedLayer {
 const ORIGIN_LAYER_ID = "movecost-origin";
 const DESTINATION_LAYER_ID = "movecost-destination";
 const TERRAIN_LAYER_ID = "movecost-terrain";
-const INPUT_GROUP_NAME = "movecost · input";
+const TERRAIN_GROUP_NAME = "movecost · terrain";
+const LOCATIONS_GROUP_NAME = "movecost · locations";
 
 const DEFAULT_PARAMS: AnalysisParams = {
   funct: "t",
@@ -196,8 +197,9 @@ export class MovecostPanel {
     origin: null,
     destination: null,
   };
-  /** Layers-panel group holding the terrain and the markers. */
-  private inputGroupId: string | null = null;
+  /** Layers-panel groups: the DEM at the bottom, the markers on top of everything. */
+  private terrainGroupId: string | null = null;
+  private locationsGroupId: string | null = null;
   private runCount = 0;
 
   private rampId = "viridis";
@@ -238,9 +240,10 @@ export class MovecostPanel {
   private plannedGrid() {
     if (!this.area) return null;
     const budget = this.cellBudget();
-    // Terrarium tiles are 256 px where elevatr's are 512 px, so the tile zoom
-    // is one finer than the level the menu names.
-    const requested = Math.min(15, this.demZoom + 1);
+    // The menu's levels are slippy-map zooms for 256 px tiles — the same scale
+    // elevatr's `z` names (checked: its zoom 12 gave 28.6 m cells at 40.8° N,
+    // i.e. 38 m × cos φ), and exactly the Terrarium tiles' own zoom.
+    const requested = Math.min(15, this.demZoom);
     const wanted = estimateGrid(this.area.features, requested);
     const fits = zoomWithinBudget(this.area.features, requested, budget.cells);
     if (!wanted || !fits) return null;
@@ -538,6 +541,29 @@ export class MovecostPanel {
     }
     children.push(actions);
 
+    // A study area that already exists as a layer — a survey boundary, a
+    // catchment — is the common case in practice, so offer it directly.
+    const layers = this.candidateLayers();
+    if (layers.length && this.app.getLayerFeatures) {
+      const options = [{ value: "", label: "From an existing polygon layer…" }].concat(
+        layers.map((layer) => ({ value: layer.id, label: layer.name ?? layer.id })),
+      );
+      children.push(
+        select(options, "", (layerId) => {
+          if (!layerId) return;
+          const layer = layers.find((l) => l.id === layerId);
+          const polygons = keepPolygons(readLayer(this.app, layerId));
+          if (!polygons.length) {
+            this.message = { text: "That layer has no polygon features.", tone: "warn" };
+          } else {
+            this.area = { features: polygons, label: `layer "${layer?.name ?? layerId}"` };
+            this.message = null;
+          }
+          this.render();
+        }),
+      );
+    }
+
     children.push(
       el("p", {
         class: this.area ? "mcx-summary" : "mcx-summary mcx-summary--empty",
@@ -576,7 +602,7 @@ export class MovecostPanel {
         children.push(
           note(
             `${cellsText(wanted)} would not fit ${budget.where} (limit ${budget.cells.toLocaleString()} cells). ` +
-              `The download will use level ${fits.zoom - 1} instead: ${cellsText(fits)}. ` +
+              `The download will use level ${fits.zoom} instead: ${cellsText(fits)}. ` +
               `Draw a smaller area for finer detail.`,
             "warn",
           ),
@@ -658,7 +684,7 @@ export class MovecostPanel {
         () => {
           this.terrainVisible = !this.terrainVisible;
           this.terrainOverlay?.setVisible(this.terrainVisible);
-          if (this.terrainVisible) this.groupInputs();
+          if (this.terrainVisible) this.groupTerrain();
           this.render();
         },
         "ghost",
@@ -711,10 +737,9 @@ export class MovecostPanel {
       if (viaService) {
         result = await backend.fetchDem!(areaGeoJson, this.demZoom);
       } else {
-        // Terrarium tiles are 256 px where elevatr's GeoTIFF tiles are 512 px,
-        // so one zoom level finer gives the cell size the menu promises — unless
-        // that grid would not fit in memory, in which case the finest level
-        // that does is used and the panel says so.
+        // The Terrarium tiles' zoom is the level the menu names (see
+        // plannedGrid) — unless that grid would not fit in memory, in which
+        // case the finest level that does is used and the panel says so.
         const plan = this.plannedGrid();
         if (plan?.overBudget) {
           throw new Error(
@@ -722,8 +747,8 @@ export class MovecostPanel {
               `${plan.fits.cells.toLocaleString()} cells (limit ${plan.budget.cells.toLocaleString()}). Draw a smaller area.`,
           );
         }
-        const tileZoom = plan?.fits.zoom ?? Math.min(15, this.demZoom + 1);
-        const reducedTo = plan?.reduced ? tileZoom - 1 : null;
+        const tileZoom = plan?.fits.zoom ?? Math.min(15, this.demZoom);
+        const reducedTo = plan?.reduced ? tileZoom : null;
         const grid = await fetchTerrariumGrid(this.area.features, tileZoom, (done, total) => {
           this.progress = {
             phase: "running",
@@ -1336,10 +1361,8 @@ export class MovecostPanel {
         opacity: 0.85,
       });
       this.terrainVisible = true;
-      // Re-add the markers so they sit above the terrain in the stack.
-      this.refreshMarkers("origin", true);
-      this.refreshMarkers("destination", true);
-      this.groupInputs();
+      this.groupTerrain();
+      this.raiseMarkers();
       const b = preview.raster.bounds;
       this.app.fitBounds?.([b.west, b.south, b.east, b.north]);
     } catch (error) {
@@ -1459,7 +1482,28 @@ export class MovecostPanel {
       features,
       style: which === "origin" ? ORIGIN_STYLE : DESTINATION_STYLE,
     });
-    this.groupInputs();
+    this.groupLocations();
+  }
+
+  /**
+   * Re-adds both marker layers so they sit above whatever was just added —
+   * the terrain, or a run's cost rasters, which would otherwise bury them.
+   * The Layers panel keeps a group's layers together, so the markers get a
+   * fresh group each time rather than being moved into the old one.
+   */
+  private raiseMarkers(): void {
+    if (!this.markers.origin && !this.markers.destination) return;
+    const oldGroup = this.locationsGroupId;
+    this.locationsGroupId = null;
+    this.refreshMarkers("origin", true);
+    this.refreshMarkers("destination", true);
+    if (oldGroup && oldGroup !== this.locationsGroupId) {
+      try {
+        this.app.removeLayerGroup?.(oldGroup);
+      } catch {
+        /* cosmetic */
+      }
+    }
   }
 
   private clearMarkers(): void {
@@ -1471,12 +1515,21 @@ export class MovecostPanel {
     }
   }
 
-  /** Terrain and markers share one Layers-panel group. */
-  private groupInputs(): void {
-    const ids = [this.terrainOverlay, this.markers.origin, this.markers.destination]
+  private groupTerrain(): void {
+    if (!this.terrainOverlay) return;
+    this.terrainGroupId = groupHostLayers(
+      this.app,
+      TERRAIN_GROUP_NAME,
+      [this.terrainOverlay.id],
+      this.terrainGroupId,
+    );
+  }
+
+  private groupLocations(): void {
+    const ids = [this.markers.origin, this.markers.destination]
       .filter((h): h is HostLayerHandle => Boolean(h))
       .map((h) => h.id);
-    this.inputGroupId = groupHostLayers(this.app, INPUT_GROUP_NAME, ids, this.inputGroupId);
+    this.locationsGroupId = groupHostLayers(this.app, LOCATIONS_GROUP_NAME, ids, this.locationsGroupId);
   }
 
   /**
@@ -1632,6 +1685,7 @@ export class MovecostPanel {
     }
 
     groupHostLayers(this.app, `movecost · ${spec.label} #${this.runCount}`, layerIds, null);
+    this.raiseMarkers();
 
     if (bounds) this.app.fitBounds?.(bounds);
   }

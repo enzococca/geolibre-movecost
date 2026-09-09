@@ -221,10 +221,10 @@ check(dest && dest.n === 2 && dest.ids.join() === "D1,D2", "two destination clic
 check(origin?.type === "geojson" && origin.style?.markerEnabled === false && origin.style?.fillColor === "#16a34a", "origin style: green circle", JSON.stringify(origin?.style && { markerEnabled: origin.style.markerEnabled, fillColor: origin.style.fillColor }));
 check(dest?.style?.markerEnabled === true && dest.style.markerShape === "triangle" && dest.style.markerColor === "#dc2626", "destination style: red triangle", JSON.stringify(dest?.style && { shape: dest.style.markerShape, color: dest.style.markerColor }));
 check(origin?.style?.labels?.enabled && origin.style.labels.field === "mcx_id", "markers are labelled by engine id");
-check(origin?.groupId && origin.groupId === dest?.groupId, "origin and destination share the input group", `${origin?.groupId} / ${dest?.groupId}`);
-const inputGroup = results.groups.find((g) => g.name === "movecost · input");
-check(Boolean(inputGroup), "input group created once", JSON.stringify(results.groups.map((g) => g.name)));
-check(results.groups.filter((g) => g.name === "movecost · input").length === 1, "input group not duplicated");
+check(origin?.groupId && origin.groupId === dest?.groupId, "origin and destination share the locations group", `${origin?.groupId} / ${dest?.groupId}`);
+const inputGroup = results.groups.find((g) => g.name === "movecost · locations");
+check(Boolean(inputGroup), "locations group created once", JSON.stringify(results.groups.map((g) => g.name)));
+check(results.groups.filter((g) => g.name === "movecost · locations").length === 1, "locations group not duplicated");
 
 if (results.addResultsOk) {
   const rasters = results.afterResults.filter((l) => l.type === "image");

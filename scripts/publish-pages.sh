@@ -30,6 +30,8 @@ cp geolibre-plugin/plugin.json "$SITE/plugin.json"
 cp dist/index.js dist/style.css "$SITE/dist/"
 [ -d build/wasm-repo ] && cp -R build/wasm-repo "$SITE/wasm-repo"
 touch "$SITE/.nojekyll"   # Pages must not run Jekyll over the repository tree
+# The user guide and its walkthrough data (docs/guide -> /guide/).
+[ -d docs/guide ] && cp -R docs/guide "$SITE/guide"
 
 # A second copy of the manifest, and of the bundle, under names unique to this
 # build. GeoLibre pins the bundle hash per manifest URL and, on the mobile

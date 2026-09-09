@@ -115,10 +115,12 @@ CORS, height encoded as `R*256 + G + B/256 − 32768`), decodes them on a canvas
 into a Float32 grid in Web Mercator, and hands that to `mcx_grid_to_dtm()`,
 which reprojects it to UTM at the true ground cell size (Mercator metres ×
 cos φ), masks it to the polygon, and writes the GeoTIFF. From there the DTM is
-an ordinary one. Terrarium tiles are 256 px where elevatr's GeoTIFF tiles are
-512 px, so the panel fetches one zoom level finer to deliver the cell size its
-menu promises. Same Vesuvius box, Tobler: 02:08:33 this way, 02:09:29 via
-elevatr — the difference is the resampling, not the terrain.
+an ordinary one. The tile zoom is the level the menu names: elevatr's `z`
+and the Terrarium tiles share the 256 px slippy-map scale (elevatr's zoom 12
+gave 28.6 m cells at 40.8° N, i.e. 38 m × cos φ — the same grid the tiles give
+at zoom 12; an earlier build fetched one level finer and produced four times
+the cells the menu promised). Same Vesuvius box, Tobler: 02:08:33 this way,
+02:09:29 via elevatr — the difference is the resampling, not the terrain.
 
 `previewDtm` is implemented by both backends; the R service also exposes the
 grid route as `POST /grid` for symmetry.
