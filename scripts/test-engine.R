@@ -180,6 +180,22 @@ for (case in cases) {
       else resp$error
     ))
     if (!ok) failures <- failures + 1
+
+    # The same grid under a cell budget must come back coarser, not fail.
+    write_json(list(
+      gridPath = grid_path, width = gw, height = gh, crs = "EPSG:3857",
+      xmin = 1597000, xmax = 1608000, ymin = 4970000, ymax = 4980000,
+      zoom = 11, maxCells = 2000, outPath = file.path(outdir, "grid-dem-small.tif")
+    ), req_path, auto_unbox = TRUE)
+    resp2 <- fromJSON(mcx_grid_to_dtm(req_path), simplifyVector = FALSE)
+    ok2 <- isTRUE(resp2$ok) && resp2$width * resp2$height <= 2600 &&
+      resp2$resolution > 2 * resp$resolution - 1
+    cat(sprintf(
+      "[%s] %-38s %s\n", if (ok2) "PASS" else "FAIL", "grid: cell budget aggregates the grid",
+      if (isTRUE(resp2$ok)) sprintf("%dx%d at %.1f m", resp2$width, resp2$height, resp2$resolution)
+      else resp2$error
+    ))
+    if (!ok2) failures <- failures + 1
     next
   }
 

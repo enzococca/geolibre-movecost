@@ -211,16 +211,24 @@ export class MovecostEngine implements AnalysisBackend {
    * tiles, R turns the grid into a UTM GeoTIFF. Serialised through the queue
    * like an analysis, since it shares the R session.
    */
-  dtmFromGrid(grid: ElevationGrid, areaGeoJson: string | null): Promise<DemResult> {
+  dtmFromGrid(
+    grid: ElevationGrid,
+    areaGeoJson: string | null,
+    options: { maxCells?: number } = {},
+  ): Promise<DemResult> {
     const task = this.queue.then(
-      () => this.gridNow(grid, areaGeoJson),
-      () => this.gridNow(grid, areaGeoJson),
+      () => this.gridNow(grid, areaGeoJson, options),
+      () => this.gridNow(grid, areaGeoJson, options),
     );
     this.queue = task.catch(() => undefined);
     return task;
   }
 
-  private async gridNow(grid: ElevationGrid, areaGeoJson: string | null): Promise<DemResult> {
+  private async gridNow(
+    grid: ElevationGrid,
+    areaGeoJson: string | null,
+    options: { maxCells?: number },
+  ): Promise<DemResult> {
     const webR = await this.boot();
     const dir = `${WORK_DIR}/grid-${++this.requestCounter}`;
     await ensureDir(webR, dir);
@@ -243,7 +251,7 @@ export class MovecostEngine implements AnalysisBackend {
     await webR.FS.writeFile(
       requestPath,
       encoder.encode(JSON.stringify({
-        gridPath, areaPath, keepAs: handle,
+        gridPath, areaPath, keepAs: handle, maxCells: options.maxCells ?? null,
         width: grid.width, height: grid.height, crs: grid.crs, zoom: grid.zoom,
         xmin: grid.xmin, ymin: grid.ymin, xmax: grid.xmax, ymax: grid.ymax,
       })),

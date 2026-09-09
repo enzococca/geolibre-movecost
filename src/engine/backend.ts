@@ -57,7 +57,11 @@ export interface AnalysisBackend {
    * projected GeoTIFF. This is how the in-browser backend gets terrain for a
    * drawn area: the tiles are public, R just cannot fetch them from inside webR.
    */
-  dtmFromGrid?: (grid: ElevationGrid, areaGeoJson: string | null) => Promise<DemResult>;
+  dtmFromGrid?: (
+    grid: ElevationGrid,
+    areaGeoJson: string | null,
+    options?: { maxCells?: number },
+  ) => Promise<DemResult>;
   close(): Promise<void>;
 }
 

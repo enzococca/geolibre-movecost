@@ -10,7 +10,7 @@ import {
   type DemSummary,
 } from "../engine/backend";
 import type { DtmPreview } from "../engine/types";
-import { fetchTerrariumGrid } from "../map/terrain-tiles";
+import { estimateGrid, fetchTerrariumGrid, zoomWithinBudget } from "../map/terrain-tiles";
 import {
   COLOUR_RAMPS,
   decodeRaster,
@@ -117,6 +117,20 @@ const DEFAULT_PARAMS: AnalysisParams = {
   lcpN: 3,
 };
 
+/**
+ * R's out-of-memory messages ("cannot allocate vector of size 150 Mb",
+ * "memory exhausted") say nothing about what to do; the fix is always the same.
+ */
+function withMemoryHint(message: string, where: string): string {
+  if (!/cannot allocate|memory exhausted|out of memory|not enough memory|Cannot enlarge memory/i.test(message)) {
+    return message;
+  }
+  return (
+    `${message} — ${where} ran out of memory. Use a coarser detail level or a smaller area ` +
+    `(fewer DEM cells), or 8 movement directions instead of 16.`
+  );
+}
+
 function formatValue(value: number): string {
   if (!Number.isFinite(value)) return "—";
   const abs = Math.abs(value);
@@ -195,7 +209,41 @@ export class MovecostPanel {
   private produced: ProducedLayer[] = [];
 
   constructor(private readonly app: GeoLibreAppAPI) {
+    // On a tablet R runs inside the browser with a hard memory ceiling, and
+    // 16 directions double the transition matrix over 8 for a marginal gain.
+    if (isMobileDevice()) this.params.move = 8;
     void this.resolveBackend();
+  }
+
+  /**
+   * How many DTM cells an analysis can take here.
+   *
+   * movecost builds a sparse transition matrix with one entry per cell and
+   * direction, and gdistance copies it several times; inside webR the whole
+   * thing must fit in the WebAssembly heap, which on an iPad is a few hundred
+   * megabytes before Safari kills the page. The figures are what stayed under
+   * that on GeoLibre 2.9.0: 150k cells (about 390 x 390) on a tablet, 400k on
+   * a desktop browser. The local R service has the machine's memory.
+   */
+  private cellBudget(): { cells: number; where: string } {
+    const inBrowser = !this.backend || this.backend.id === "webr";
+    if (!inBrowser) return { cells: 4_000_000, where: "the local R service" };
+    return isMobileDevice()
+      ? { cells: 150_000, where: "R inside the browser on a tablet" }
+      : { cells: 400_000, where: "R inside the browser" };
+  }
+
+  /** The grid the tile download would produce for the current area and detail. */
+  private plannedGrid() {
+    if (!this.area) return null;
+    const budget = this.cellBudget();
+    // Terrarium tiles are 256 px where elevatr's are 512 px, so the tile zoom
+    // is one finer than the level the menu names.
+    const requested = Math.min(15, this.demZoom + 1);
+    const wanted = estimateGrid(this.area.features, requested);
+    const fits = zoomWithinBudget(this.area.features, requested, budget.cells);
+    if (!wanted || !fits) return null;
+    return { budget, wanted, fits, reduced: fits.zoom < requested, overBudget: fits.cells > budget.cells };
   }
 
   /**
@@ -500,12 +548,53 @@ export class MovecostPanel {
         "Detail",
         select(DEM_ZOOMS, String(this.demZoom), (value) => {
           this.demZoom = Number(value);
+          this.render();
         }),
         {
-          hint: "Elevation comes from the AWS terrain tiles via elevatr. Finer detail means a much slower analysis.",
+          hint: "Elevation comes from the AWS terrain tiles. Finer detail means a much slower analysis.",
         },
       ),
     );
+
+    // Say up front what the download will produce, and whether it has to be
+    // coarsened to fit in memory — better than an R "cannot allocate" later.
+    const plan = viaTiles && !viaService ? this.plannedGrid() : null;
+    if (plan) {
+      const { budget, wanted, fits } = plan;
+      const cellsText = (g: { width: number; height: number; cells: number; resolution: number }) =>
+        `${g.width} × ${g.height} cells (${g.cells.toLocaleString()}) at about ${Math.round(g.resolution)} m`;
+      if (plan.overBudget) {
+        children.push(
+          note(
+            `Even the coarsest level gives ${cellsText(fits)}, above the ${budget.cells.toLocaleString()}-cell ` +
+              `limit for ${budget.where}. Draw a smaller area.`,
+            "error",
+          ),
+        );
+      } else if (plan.reduced) {
+        children.push(
+          note(
+            `${cellsText(wanted)} would not fit ${budget.where} (limit ${budget.cells.toLocaleString()} cells). ` +
+              `The download will use level ${fits.zoom - 1} instead: ${cellsText(fits)}. ` +
+              `Draw a smaller area for finer detail.`,
+            "warn",
+          ),
+        );
+      } else {
+        children.push(el("p", { class: "mcx-summary", text: `Expected DEM: ${cellsText(wanted)}.` }));
+      }
+    } else if (viaService && this.area) {
+      const wanted = estimateGrid(this.area.features, this.demZoom);
+      if (wanted && wanted.cells > 2_000_000) {
+        children.push(
+          note(
+            `About ${wanted.cells.toLocaleString()} cells at this level — the analysis will take minutes. ` +
+              `A coarser level or a smaller area keeps it interactive.`,
+            "warn",
+          ),
+        );
+      }
+    }
 
     const download = button(
       this.downloadingDem ? "Downloading…" : "Download DEM",
@@ -622,8 +711,18 @@ export class MovecostPanel {
         result = await backend.fetchDem!(areaGeoJson, this.demZoom);
       } else {
         // Terrarium tiles are 256 px where elevatr's GeoTIFF tiles are 512 px,
-        // so one zoom level finer gives the cell size the menu promises.
-        const tileZoom = Math.min(15, this.demZoom + 1);
+        // so one zoom level finer gives the cell size the menu promises — unless
+        // that grid would not fit in memory, in which case the finest level
+        // that does is used and the panel says so.
+        const plan = this.plannedGrid();
+        if (plan?.overBudget) {
+          throw new Error(
+            `The area is too large for ${plan.budget.where}: even at the coarsest level it needs ` +
+              `${plan.fits.cells.toLocaleString()} cells (limit ${plan.budget.cells.toLocaleString()}). Draw a smaller area.`,
+          );
+        }
+        const tileZoom = plan?.fits.zoom ?? Math.min(15, this.demZoom + 1);
+        const reducedTo = plan?.reduced ? tileZoom - 1 : null;
         const grid = await fetchTerrariumGrid(this.area.features, tileZoom, (done, total) => {
           this.progress = {
             phase: "running",
@@ -632,22 +731,32 @@ export class MovecostPanel {
           };
           this.renderStatus();
         });
-        result = await backend.dtmFromGrid!(grid, areaGeoJson);
-        result.summary.zoom = this.demZoom;
+        result = await backend.dtmFromGrid!(grid, areaGeoJson, { maxCells: this.cellBudget().cells });
+        result.summary.zoom = reducedTo ?? this.demZoom;
+        if (reducedTo !== null) {
+          this.message = {
+            text:
+              `Detail reduced to level ${reducedTo} (about ${Math.round(result.summary.resolution)} m) so the ` +
+              `${result.summary.width} × ${result.summary.height} DEM fits ${this.cellBudget().where}. ` +
+              `Draw a smaller area for finer detail.`,
+            tone: "info",
+          };
+        }
       }
       const { bytes, summary, handle } = result;
       this.dtm = { name: `DEM (zoom ${summary.zoom})`, bytes, handle, summary };
       this.useArea = false;
       const cells = summary.width * summary.height;
-      this.message =
-        cells > 400_000
-          ? {
-              text:
-                `That is ${cells.toLocaleString()} cells. Cost-distance work grows with the cell ` +
-                `count — consider a coarser detail level or a smaller area if the analysis drags.`,
-              tone: "warn",
-            }
-          : null;
+      if (cells > this.cellBudget().cells) {
+        this.message = {
+          text:
+            `That is ${cells.toLocaleString()} cells. Cost-distance work grows with the cell ` +
+            `count — consider a coarser detail level or a smaller area if the analysis drags or runs out of memory.`,
+          tone: "warn",
+        };
+      } else if (!this.message) {
+        this.message = null;
+      }
       const b = summary.bounds;
       this.app.fitBounds?.([b.west, b.south, b.east, b.north]);
       this.downloadingDem = false;
@@ -1463,11 +1572,11 @@ export class MovecostPanel {
         this.addResultsToMap(response);
         this.message = null;
       } else {
-        this.message = { text: response.error, tone: "error" };
+        this.message = { text: withMemoryHint(response.error, this.cellBudget().where), tone: "error" };
       }
       this.lastRun = { response, layers: this.produced };
     } catch (error) {
-      this.message = { text: describeError(error), tone: "error" };
+      this.message = { text: withMemoryHint(describeError(error), this.cellBudget().where), tone: "error" };
       this.lastRun = null;
     } finally {
       this.busy = false;

@@ -599,7 +599,21 @@ mcx_grid_to_dtm <- function(request_path, response_path = NULL) {
 
       r <- terra::rast(matrix(values, nrow = height, ncol = width, byrow = TRUE),
                        crs = grid_crs)
+      rm(values)
       terra::ext(r) <- terra::ext(req$xmin, req$xmax, req$ymin, req$ymax)
+
+      # Belt and braces behind the panel's own budget: a grid over `maxCells`
+      # is averaged down before projection, so an oversized request degrades
+      # to a coarser DTM instead of exhausting the heap.
+      max_cells <- as.numeric(mcx_pick(req, "maxCells", NA_real_))
+      if (is.finite(max_cells) && max_cells > 0 && expected > max_cells) {
+        fact <- ceiling(sqrt(expected / max_cells))
+        mcx_log("Grid of ", expected, " cells exceeds the ", max_cells,
+                "-cell budget; aggregating by ", fact)
+        r <- terra::aggregate(r, fact = fact, fun = "mean", na.rm = TRUE)
+        width <- terra::ncol(r)
+        height <- terra::nrow(r)
+      }
 
       centre <- sf::st_sfc(sf::st_point(c((req$xmin + req$xmax) / 2,
                                           (req$ymin + req$ymax) / 2)),
@@ -631,6 +645,11 @@ mcx_grid_to_dtm <- function(request_path, response_path = NULL) {
       keep_as <- mcx_pick(req, "keepAs", NULL)
       out_path <- mcx_pick(req, "outPath", NULL)
       if (!is.null(keep_as) && nzchar(keep_as)) {
+        # One DTM at a time: inside webR every kept raster stays in the wasm
+        # heap, and a handful of downloads over a session is what turns a
+        # comfortable run into "cannot allocate". The panel only ever refers
+        # to the latest handle.
+        mcx_env$dtms <- list()
         mcx_env$dtms[[keep_as]] <- r
         out_bytes <- 0
         out_path <- NULL
@@ -664,8 +683,9 @@ mcx_grid_to_dtm <- function(request_path, response_path = NULL) {
         log = mcx_env$log
       )
     },
-    error = function(e) list(ok = FALSE, error = conditionMessage(e), log = mcx_env$log)
+    error = function(e) list(ok = FALSE, error = mcx_memory_hint(conditionMessage(e)), log = mcx_env$log)
   )
+  invisible(gc(full = TRUE))
 
   jsonlite::write_json(out, response_path, auto_unbox = TRUE, null = "null",
                        na = "null", digits = 8)
@@ -843,16 +863,30 @@ mcx_run <- function(request_path, response_path = NULL) {
     error = function(e) {
       list(
         ok = FALSE,
-        error = conditionMessage(e),
+        error = mcx_memory_hint(conditionMessage(e)),
         log = mcx_env$log,
         elapsedSeconds = as.numeric(difftime(Sys.time(), started, units = "secs"))
       )
     }
   )
+  # The transition matrices and cost surfaces are large and out of scope now;
+  # inside webR the heap they held is only reusable once R has collected them.
+  invisible(gc(full = TRUE))
 
   jsonlite::write_json(
     out, response_path,
     auto_unbox = TRUE, null = "null", na = "null", digits = 8
   )
   invisible(response_path)
+}
+
+# R's out-of-memory errors name the size, never the remedy.
+mcx_memory_hint <- function(msg) {
+  if (grepl("cannot allocate|memory exhausted|out of memory|Cannot enlarge memory", msg,
+            ignore.case = TRUE)) {
+    paste0(msg, " (the DTM is too large for the memory available: use a coarser ",
+           "detail level or a smaller area, or 8 movement directions instead of 16)")
+  } else {
+    msg
+  }
 }

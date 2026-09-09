@@ -164,6 +164,65 @@ export async function fetchTerrariumGrid(
   };
 }
 
+export interface GridEstimate {
+  zoom: number;
+  width: number;
+  height: number;
+  cells: number;
+  tiles: number;
+  /** Ground cell size in metres at the area's centre latitude. */
+  resolution: number;
+}
+
+/**
+ * What `fetchTerrariumGrid` would produce for this area at this zoom, without
+ * fetching anything. The cell count is what decides whether an analysis fits
+ * in memory: movecost's transition matrix holds `directions` entries per cell.
+ */
+export function estimateGrid(features: GeoJsonFeature[], zoom: number): GridEstimate | null {
+  const bbox = boundsOf(features);
+  if (!bbox) return null;
+  const [west, south, east, north] = bbox;
+  if (!(east > west && north > south)) return null;
+  const px0 = Math.floor(lonToPixelX(west, zoom));
+  const px1 = Math.ceil(lonToPixelX(east, zoom));
+  const py0 = Math.floor(latToPixelY(north, zoom));
+  const py1 = Math.ceil(latToPixelY(south, zoom));
+  const width = Math.max(1, px1 - px0);
+  const height = Math.max(1, py1 - py0);
+  const tilesX = Math.floor((px1 - 1) / TILE_SIZE) - Math.floor(px0 / TILE_SIZE) + 1;
+  const tilesY = Math.floor((py1 - 1) / TILE_SIZE) - Math.floor(py0 / TILE_SIZE) + 1;
+  const centreLat = (south + north) / 2;
+  return {
+    zoom,
+    width,
+    height,
+    cells: width * height,
+    tiles: tilesX * tilesY,
+    resolution: mercatorResolution(zoom) * Math.cos((centreLat * Math.PI) / 180),
+  };
+}
+
+/**
+ * The finest zoom, at or below `requested`, whose grid stays within `maxCells`
+ * (and MAX_TILES). Never below `floor`: a study area so large that even that
+ * is over budget is reported as-is and left to the caller to warn about.
+ */
+export function zoomWithinBudget(
+  features: GeoJsonFeature[],
+  requested: number,
+  maxCells: number,
+  floor = 6,
+): GridEstimate | null {
+  let estimate: GridEstimate | null = null;
+  for (let zoom = requested; zoom >= floor; zoom -= 1) {
+    estimate = estimateGrid(features, zoom);
+    if (!estimate) return null;
+    if (estimate.cells <= maxCells && estimate.tiles <= MAX_TILES) return estimate;
+  }
+  return estimate;
+}
+
 /** The grid's raw bytes, as the R engine reads them with `readBin(size = 4)`. */
 export function gridBytes(grid: ElevationGrid): Uint8Array {
   // Float32Array is native-endian; every platform this runs on is little-endian,
