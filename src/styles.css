@@ -343,17 +343,37 @@
 
 /* --- map control ---------------------------------------------------------- */
 
-.mcx-ctrl__button {
+/* Two classes so this outranks MapLibre's `.maplibregl-ctrl-group button {
+   display: block }`, which loads later and would leave the icon at the top-left
+   of the cell. GeoLibre keeps map control buttons white in both themes, so the
+   icon gets a fixed dark colour rather than the theme foreground, which is
+   near-white in dark mode and made the icon vanish. Same approach as the host's
+   graticule and spin-globe controls. */
+.mcx-ctrl .mcx-ctrl__button {
   display: flex;
   align-items: center;
   justify-content: center;
+  box-sizing: border-box;
   width: 29px;
   height: 29px;
+  margin: 0;
   padding: 0;
   border: none;
   background: none;
-  color: hsl(var(--foreground, 0 0% 15%));
+  color: #1f2a37;
   cursor: pointer;
+}
+
+.mcx-ctrl .mcx-ctrl__button:hover {
+  background-color: rgb(0 0 0 / 0.05);
+}
+
+.mcx-ctrl .mcx-ctrl__button > svg {
+  display: block;
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  margin: 0 auto;
 }
 
 /* --- floating fallback ---------------------------------------------------- */
