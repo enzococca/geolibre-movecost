@@ -34,6 +34,15 @@ export const WEBR_BASE_URL =
 export const UPSTREAM_WASM_REPO = "https://repo.r-wasm.org";
 
 /**
+ * The repository published with the plugin's own site, carrying the rebuilt
+ * terra (docs/TERRA-WASM.md). The panel also discovers a `wasm-repo/` next to
+ * whichever manifest the plugin was installed from, but a copy installed from
+ * the GeoLibre plugin registry is served from plugins.geolibre.app with no
+ * repository beside it, so this one is always consulted before upstream.
+ */
+export const PUBLISHED_WASM_REPO = "https://enzococca.github.io/geolibre-movecost/wasm-repo";
+
+/**
  * Repositories to install from, in order of preference.
  *
  * `MOVECOST_WASM_REPO` prepends a repository rather than replacing the upstream
@@ -44,7 +53,8 @@ export const UPSTREAM_WASM_REPO = "https://repo.r-wasm.org";
  */
 export const WASM_CRAN_REPOS: string[] = (() => {
   const override = readOverride("MOVECOST_WASM_REPO");
-  return override ? [override, UPSTREAM_WASM_REPO] : [UPSTREAM_WASM_REPO];
+  const repos = [PUBLISHED_WASM_REPO, UPSTREAM_WASM_REPO];
+  return override ? [override, ...repos] : repos;
 })();
 
 /** The repository webR treats as its default; the full list is used on install. */
