@@ -108,6 +108,27 @@ removed 16 graph edges and blocked nothing, the same wall 25 m higher removed
 about 950. movecost's behaviour, not ours, and only round-coordinate fixtures
 hit it — but it cost an hour to find, so the matrix test says so in a comment.
 
+**Barrier bug, found from Enzo's own project file (`fc51b97`).** "Use drawings"
+handed movecost every sketch, including the rectangle he had drawn to define
+the study area — so the whole area was a barrier — and GeoLibre's sketches
+layer mixes geometry types and carries list-valued `__gm_*` properties. terra
+cannot build one SpatVector from mixed geometry, so `mc_surface()` died with
+"[as,sf] coercion failed. You can try coercing via a Spatial* (sp) class", and
+the underlying "nrow dataframe does not match nrow geometry" named no function.
+Fixed on three fronts: the picker excludes the study-area drawing;
+`mcx_tidy_vector()` strips Z/M, empty geometries and non-atomic columns from
+every layer and `mcx_prepare_barrier()` buffers a mixed barrier by half a cell
+so the lines become thin polygons over the same cells; and an unexpected error
+now carries the call stack (captured with `withCallingHandlers`, since
+`tryCatch` unwinds it first) plus a log line describing the inputs. The matrix
+test covers a mixed line+polygon barrier with list columns and one with Z
+coordinates.
+
+**Group spam.** The same project had 21 empty "movecost · locations" groups:
+raising the markers makes a new group each time and asks the host to remove the
+old one, and that host ignores the call. The panel now gives up after two
+orphans and reuses its group.
+
 **Still open:** GeoLibre Desktop logged
 `Image "geolibre-marker-triangle-dc2626-22" could not be loaded` once, and a
 burst of `There is no tile manager with ID 'gm_temporary'`. Neither reproduced
