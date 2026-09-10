@@ -4647,9 +4647,10 @@ function addHostRasterLayer(app, raster, options) {
     }
   };
 }
-function groupHostLayers(app, name, layerIds, existingGroupId) {
+function groupHostLayers(app, name, layerIds, existingGroupId, options = {}) {
   if (!layerIds.length) return existingGroupId;
   try {
+    if (options.volatile && typeof app.moveLayersToGroup !== "function") return null;
     if (existingGroupId) {
       app.moveLayersToGroup?.(layerIds, existingGroupId);
       return existingGroupId;
@@ -6359,7 +6360,9 @@ class MovecostPanel {
   }
   groupLocations() {
     const ids = [this.markers.origin, this.markers.destination].filter((h2) => Boolean(h2)).map((h2) => h2.id);
-    this.locationsGroupId = groupHostLayers(this.app, LOCATIONS_GROUP_NAME, ids, this.locationsGroupId);
+    this.locationsGroupId = groupHostLayers(this.app, LOCATIONS_GROUP_NAME, ids, this.locationsGroupId, {
+      volatile: true
+    });
   }
   /**
    * Layers offered as point / barrier sources: everything the host lists except
