@@ -3504,6 +3504,7 @@ const WASM_CRAN_REPOS = (() => {
   return override ? [override, ...repos] : repos;
 })();
 const R_PACKAGES = [
+  "codetools",
   "jsonlite",
   "terra",
   "sf",
@@ -3512,6 +3513,7 @@ const R_PACKAGES = [
   "movecost"
 ];
 const R_PACKAGE_WEIGHTS = {
+  codetools: 1,
   jsonlite: 1,
   terra: 8,
   sf: 10,

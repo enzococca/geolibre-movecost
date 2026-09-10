@@ -5,8 +5,8 @@ Imports: terra (>= 1.7-0), sf (>= 1.0-9), igraph (>= 1.4.0), ggplot2
         (>= 3.4.0), utils, grDevices
 Suggests: elevatr (>= 0.99.0), testthat (>= 3.0.0), knitr, rmarkdown
 License: GPL (>= 2)
-MD5sum: d8a0aed704edf864c58d08662cf6b6bb
-Built: R 4.6.0; wasm32-unknown-emscripten; 2026-09-09 17:11:03 UTC;
+MD5sum: 17ab63d0649f38cc7746c09cc18d0f1d
+Built: R 4.6.0; wasm32-unknown-emscripten; 2026-09-10 06:45:57 UTC;
         unix
 File: movecost_3.0.0.tgz
 
