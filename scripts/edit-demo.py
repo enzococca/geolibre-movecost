@@ -26,6 +26,7 @@ BAR = 96              # title bar
 BAND_H = 724          # the capture band
 CAP_Y = BAR + BAND_H  # caption band starts here
 FPS = 30
+DEFAULT_CAP = 4.0        # seconds of finished video a beat may take
 
 BG = (15, 23, 42)
 FG = (233, 238, 246)
@@ -282,15 +283,27 @@ def build_video(demo_dir):
     for i, (beat, end) in enumerate(spans):
         start = beat["t"]
         end = min(end, total_src)
+        # A beat may say how much screen time it is worth. Anything longer is
+        # cut, not accelerated: a DEM download is two and a half minutes of a
+        # progress bar, and three seconds of it tells the whole story, while
+        # the speed-up needed to fit it whole would be a slideshow.
+        cap = float(beat.get("cap", DEFAULT_CAP))
+        # `speed` is a ceiling, not an instruction: a beat is accelerated only
+        # as much as its cap actually requires, and never below real time. The
+        # run of the analysis is the clearest case — asking for eight times on
+        # six seconds of source turned the one thing worth watching into a
+        # blink, where 1.4x fills the same four seconds.
+        speed = max(1.0, min(float(beat.get("speed", 1)), (end - start) / cap))
+        end = min(end, start + cap * speed)
         if end - start < 0.4:
             continue
         overlay = work / f"cap-{i:02d}.png"
         chrome(beat["caption"], i + 1, len(spans)).save(overlay)
         out = work / f"{i+1:02d}-beat.mp4"
-        segment_video(src, start, end, beat.get("focus", "full"), beat.get("speed", 1),
+        segment_video(src, start, end, beat.get("focus", "full"), speed,
                       meta["rects"], src_w, src_h, 1, overlay, out)
         parts.append(out)
-        print(f"  beat {i+1}/{len(spans)}  {end-start:5.1f}s ×{beat.get('speed',1)} "
+        print(f"  beat {i+1}/{len(spans)}  {end-start:5.1f}s ×{speed:.1f} "
               f"→ {duration_of(out):4.1f}s  {beat['caption'][:52]}")
     card_clip("end", 2.8, work / "99-end.mp4")
     parts.append(work / "99-end.mp4")

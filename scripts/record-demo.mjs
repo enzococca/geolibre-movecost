@@ -157,8 +157,12 @@ const rectOf = async (selector) => {
 // --- timeline ----------------------------------------------------------------
 const t0 = Date.now();
 const timeline = [];
-const beat = async (caption, { focus = "map", speed = 1 } = {}) => {
-  timeline.push({ t: (Date.now() - t0) / 1000, caption, focus, speed });
+// `cap` is the most screen time this beat may take in the finished video. The
+// editor honours it by cutting the segment short rather than speeding it up
+// further: past about eight times, a screencast stops being motion and starts
+// being a slideshow, so length is bought by cutting, not by acceleration.
+const beat = async (caption, { focus = "map", speed = 1, cap = 4 } = {}) => {
+  timeline.push({ t: (Date.now() - t0) / 1000, caption, focus, speed, cap });
   log(`beat @${((Date.now() - t0) / 1000).toFixed(1)}s ${focus} ×${speed} — ${caption}`);
 };
 
@@ -194,17 +198,17 @@ await page.waitForTimeout(5000);
 log("loaded");
 
 // 1 — activate the plugin
-await beat("Least-cost path analysis inside GeoLibre", { focus: "full", speed: 1 });
+await beat("Least-cost path analysis inside GeoLibre", { focus: "full", speed: 1, cap: 4 });
 await menu(/^Plugins$/, /movecost — least-cost analysis/);
 await page.waitForTimeout(1600);
-await beat("The movecost R package, as a GeoLibre plugin", { focus: "full", speed: 1 });
+await beat("The movecost R package, as a GeoLibre plugin", { focus: "full", speed: 1, cap: 3.5 });
 await menu(/^movecost$/, /Open the movecost panel/);
 await page.waitForTimeout(2200);
-await beat("No R installed: R itself runs in the page (WebAssembly)", { focus: "panel", speed: 1 });
+await beat("No R installed: R itself runs in the page (WebAssembly)", { focus: "panel", speed: 1, cap: 3 });
 await page.waitForTimeout(2600);
 
 // 2 — the data
-await beat("Sites and study area — loaded, drawn or clicked on the map", { focus: "full", speed: 6 });
+await beat("Sites and study area — loaded, drawn or clicked on the map", { focus: "full", speed: 6, cap: 4 });
 const loadVector = async (file) => {
   await menu(/^Add Data$/, /^Vector Layer$/);
   await page.waitForTimeout(900);
@@ -224,7 +228,7 @@ if (await closePanel.count()) await clickLocator(closePanel, { hold: 200 });
 await page.waitForTimeout(2500);
 
 // 3 — terrain
-await beat("Pompeii, Herculaneum and Oplontis around Vesuvius", { focus: "map", speed: 1 });
+await beat("Pompeii, Herculaneum and Oplontis around Vesuvius", { focus: "map", speed: 1, cap: 4 });
 await page.waitForTimeout(2200);
 const areaSelect = page.locator(".mcx-section select").filter({ hasText: /polygon layer/i }).first();
 await clickLocator(areaSelect.first(), { hold: 200 }).catch(() => {});
@@ -245,26 +249,26 @@ await page.evaluate(() => {
   }
 });
 await page.waitForTimeout(1200);
-await beat("The DEM is sized before it is fetched, to fit in memory", { focus: "panel", speed: 1 });
+await beat("The DEM is sized before it is fetched, to fit in memory", { focus: "panel", speed: 1, cap: 2.6 });
 await page.waitForTimeout(2800);
-await beat("Elevation downloaded tile by tile, projected to UTM", { focus: "full", speed: 8 });
+await beat("Elevation downloaded tile by tile, projected to UTM", { focus: "full", speed: 8, cap: 3 });
 await clickLocator(panelButton("Download DEM"));
 await page.waitForFunction(() => /Hide terrain/.test(document.body.innerText), null, { timeout: 300_000 });
 await page.waitForTimeout(3000);
-await beat("Projected to UTM and drawn straight onto the map", { focus: "map", speed: 1 });
+await beat("Projected to UTM and drawn straight onto the map", { focus: "map", speed: 1, cap: 2.6 });
 await page.waitForTimeout(2600);
 
 // 4 — locations
-await beat("Origin and destinations: from a layer, or clicked", { focus: "full", speed: 1 });
+await beat("Origin and destinations: from a layer, or clicked", { focus: "full", speed: 1, cap: 4 });
 await selectInPicker(0, "pompeii");
 await page.waitForTimeout(1500);
 await selectInPicker(1, "destinations");
 await page.waitForTimeout(2600);
 
 // 5 — run
-await beat("Tobler's hiking function — 27 cost functions available", { focus: "panel", speed: 1 });
+await beat("Tobler's hiking function — 26 cost functions available", { focus: "panel", speed: 1, cap: 2.6 });
 await page.waitForTimeout(2000);
-await beat("movecost runs in the browser: no server, no install", { focus: "full", speed: 8 });
+await beat("movecost runs in the browser: no server, no install", { focus: "full", speed: 8, cap: 4 });
 await clickLocator(panelButton("Run analysis"));
 await page.waitForFunction(
   () => /Remove these result layers|Least-cost paths — [\d.]+ s in/.test(document.body.innerText),
@@ -274,11 +278,11 @@ await page.waitForFunction(
 await page.waitForTimeout(3500);
 
 // 6 — results
-await beat("Cost surface, isolines and the least-cost paths", { focus: "map", speed: 1 });
+await beat("Cost surface, isolines and the least-cost paths", { focus: "map", speed: 1, cap: 4 });
 await page.waitForTimeout(3800);
-await beat("Every result is a native GeoLibre layer, grouped per run", { focus: "layers", speed: 1 });
+await beat("Every result is a native GeoLibre layer, grouped per run", { focus: "layers", speed: 1, cap: 3.5 });
 await page.waitForTimeout(3600);
-await beat("Desktop, and on the iPad too", { focus: "map", speed: 1 });
+await beat("Desktop, and on the iPad too", { focus: "map", speed: 1, cap: 2.6 });
 await page.waitForTimeout(2600);
 
 timeline.push({ t: (Date.now() - t0) / 1000, caption: "__end__", focus: "map", speed: 1 });
