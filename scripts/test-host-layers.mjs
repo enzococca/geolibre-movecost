@@ -280,6 +280,48 @@ const ordering = await page.evaluate(async (bundleSource) => {
   };
 }, bundle);
 
+// --- a host with no moveLayersToGroup ---------------------------------------
+// GeoLibre's newer builds can move layers between groups; older ones cannot,
+// and that is the case that filled a user's Layers panel with twenty empty
+// "movecost · locations" rows — each raise fell through to addLayerGroup, and
+// the layers followed the new group. One group, whatever the host offers.
+const noMove = await page.evaluate(async (bundleSource) => {
+  let layers = [];
+  const groups = [];
+  const app = {
+    addGeoJsonLayer: () => "x", addMapControl: () => true, removeMapControl() {},
+    getMap: () => ({ on() {}, off() {}, getCanvas: () => document.getElementById("c"), addSource() {}, removeSource() {}, getSource: () => null, addLayer() {}, removeLayer() {}, getLayer: () => null }),
+    registerExternalNativeLayer: (reg) => {
+      const i = layers.findIndex((l) => l.id === reg.id);
+      if (i >= 0) layers[i] = { ...layers[i], name: reg.name };
+      else layers.push({ id: reg.id, name: reg.name, type: reg.type });
+    },
+    unregisterExternalNativeLayer: (id) => { layers = layers.filter((l) => l.id !== id); },
+    addLayerGroup: (name, ids) => {
+      const id = "g" + (groups.length + 1);
+      groups.push({ id, name });
+      const set = new Set(ids ?? []);
+      layers = layers.map((l) => (set.has(l.id) ? { ...l, groupId: id } : l));
+      return id;
+    },
+    // no moveLayersToGroup, no removeLayerGroup
+    listLayers: () => layers.map((l) => ({ id: l.id, name: l.name })),
+    registerRightPanel: () => () => {},
+  };
+  const mod = await import(URL.createObjectURL(new Blob([bundleSource], { type: "text/javascript" })));
+  const p = new mod.MovecostPanel(app);
+  const pt = (x) => ({ type: "Feature", geometry: { type: "Point", coordinates: [x, x] }, properties: {} });
+  p.origin = { kind: "click", label: "x", features: [pt(1)] }; p.refreshMarkers("origin");
+  p.destination = { kind: "click", label: "x", features: [pt(2)] }; p.refreshMarkers("destination");
+  const f32 = new Float32Array(12).map((_, i) => i);
+  const b64 = btoa(String.fromCharCode(...new Uint8Array(f32.buffer)));
+  const raster = { name: "a", width: 4, height: 3, data: b64, bounds: { west: 0, south: 0, east: 1, north: 1 }, min: 0, max: 11 };
+  const line = JSON.stringify({ type: "FeatureCollection", features: [{ type: "Feature", geometry: { type: "LineString", coordinates: [[0, 0], [1, 1]] }, properties: {} }] });
+  const response = { ok: true, analysis: "paths", crs: "EPSG:32633", elapsedSeconds: 1, result: { vectors: { lcps: line }, rasters: { accumulated: raster }, tables: {} }, log: [] };
+  for (let i = 0; i < 3; i++) p.addResultsToMap(response);
+  return { locationGroups: groups.filter((g) => g.name.includes("locations")).length, total: groups.length };
+}, bundle);
+
 await browser.close();
 
 let failures = 0;
@@ -327,6 +369,7 @@ const top2 = ordering.order.slice(-2).map((x) => x.split("@")[0]);
 check(top2.join(",") === "movecost-origin,movecost-destination", "markers end above a run's rasters and vectors (store-faithful host)", JSON.stringify(ordering.order));
 check(ordering.locationGroups === 1, "one locations group survives two runs", `${ordering.locationGroups} created`);
 check(ordering.emptyGroups.length === 0, "no empty groups left behind", JSON.stringify(ordering.emptyGroups));
+check(noMove.locationGroups === 1, "one locations group on a host that cannot move layers", `${noMove.locationGroups} created over three runs`);
 check(new Set(ordering.order.slice(-2).map((x) => x.split("@")[1])).size === 1, "both markers share one locations group after the run");
 
 console.log(failures ? `\n${failures} check(s) failed.` : "\nAll host-layer checks passed.");

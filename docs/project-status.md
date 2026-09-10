@@ -146,13 +146,20 @@ raise — and `groupHostLayers()` now never creates a second group under a name 
 already holds. Two runs in the store-faithful host test must leave exactly one
 locations group and no empty ones.
 
-**Unverified on a real host:** the Mac went offline before this could be built,
-published and tried in GeoLibre. Nothing is committed; the working copy in the
-cloud session has the changes and passes typecheck, build and the host-layer
-suite (chromium at `/opt/pw-browsers/chromium-1194/chrome-linux/chrome`, via
-`MCX_CHROMIUM`). The R suites need the Mac. Next session: sync, run
-`test-matrix.R` + `test-engine.R`, publish, and check on the iPad whether the
-`gm_temporary` bursts are gone.
+**Root cause pinned (2026-09-10).** The spam depends on the host: with
+`moveLayersToGroup` available the old code reused its group and behaved; without
+it, every grouping call fell through to `addLayerGroup` and the layers followed
+the new group, leaving the old one empty. A local GeoLibre built from `main`
+has the method, which is why two runs there showed one group and no
+`gm_temporary` errors on both the old and the new bundle — the live A/B proved
+nothing. The headless case does: the same store-faithful host with
+`moveLayersToGroup` omitted produces **8** locations groups over three runs on
+the old code and **1** on the new. So Enzo's build (iPad, and GeoLibre Desktop)
+is one without that method.
+
+`scripts/check-layer-churn.mjs` drives a real GeoLibre through two analyses and
+counts the groups in the Layers panel plus every `tile manager with ID` line on
+the console; keep it for the next host-level question.
 
 **Still open:** GeoLibre Desktop logged
 `Image "geolibre-marker-triangle-dc2626-22" could not be loaded` once. It did
