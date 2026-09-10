@@ -2,7 +2,7 @@
 
 Project lives at `~/geolibre-movecost` on the Mac (mac-home) and on GitHub at
 **https://github.com/enzococca/geolibre-movecost** (main + orphan `gh-pages`).
-Version 0.2.0. GeoLibre is 2.9.0 on both the Mac and the iPad.
+Version 0.2.1. GeoLibre is 2.9.0 on both the Mac and the iPad.
 
 **Published manifest (permanent):**
 `https://enzococca.github.io/geolibre-movecost/plugin.json`
@@ -10,6 +10,25 @@ Version 0.2.0. GeoLibre is 2.9.0 on both the Mac and the iPad.
 movecost 3.0.0 for WebAssembly) with CORS.
 Republish with `bash scripts/publish-pages.sh && git push origin gh-pages`;
 if the Pages build does not pick it up, `gh api -X POST repos/enzococca/geolibre-movecost/pages/builds`.
+
+## Where it stands (2026-09-10, 0.2.1)
+
+Published and live: Pages (`plugin.json` plus the per-build
+`plugin-0.2.1-e6b1ac47.json` the mobile builds need), the guide with its 0.2.0
+screenshots and 3.0 text, the registry PR branch, and GeoLibre Desktop.
+Suites green: typecheck, build, host-layer, `test-matrix.R`, `test-engine.R`,
+and the webR install under Node.
+
+Open, and not ours to close: **PR #54 is approved but unmerged**, so the plugin
+still installs by manifest URL rather than from the registry. Its preview
+workflow needs a maintainer to approve each run and the `opengeos/pages-preview`
+Pages build has failed repeatedly — `scripts/build-geolibre-preview.sh` exists
+because of that.
+
+Open, and ours: the guide's third install route points at the GitHub
+**releases** page, which is empty. `npm run package` builds
+`build/movecost-<version>.zip` and it passes `check-plugin-zip.py`; cutting the
+release is a one-liner, waiting on Enzo since it publishes publicly.
 
 ## Plugin registry submission — PR OPEN
 
