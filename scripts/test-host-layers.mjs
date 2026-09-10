@@ -284,7 +284,9 @@ const ordering = await page.evaluate(async (bundleSource) => {
 // GeoLibre's newer builds can move layers between groups; older ones cannot,
 // and that is the case that filled a user's Layers panel with twenty empty
 // "movecost · locations" rows — each raise fell through to addLayerGroup, and
-// the layers followed the new group. One group, whatever the host offers.
+// the layers followed the new group. Reusing one group left exactly one empty
+// row instead, because nothing could put the re-added markers back into it. On
+// a host like this the markers are simply left ungrouped.
 const noMove = await page.evaluate(async (bundleSource) => {
   let layers = [];
   const groups = [];
@@ -369,7 +371,7 @@ const top2 = ordering.order.slice(-2).map((x) => x.split("@")[0]);
 check(top2.join(",") === "movecost-origin,movecost-destination", "markers end above a run's rasters and vectors (store-faithful host)", JSON.stringify(ordering.order));
 check(ordering.locationGroups === 1, "one locations group survives two runs", `${ordering.locationGroups} created`);
 check(ordering.emptyGroups.length === 0, "no empty groups left behind", JSON.stringify(ordering.emptyGroups));
-check(noMove.locationGroups === 1, "one locations group on a host that cannot move layers", `${noMove.locationGroups} created over three runs`);
+check(noMove.locationGroups === 0, "no locations group at all on a host that cannot move layers", `${noMove.locationGroups} created over three runs`);
 check(new Set(ordering.order.slice(-2).map((x) => x.split("@")[1])).size === 1, "both markers share one locations group after the run");
 
 console.log(failures ? `\n${failures} check(s) failed.` : "\nAll host-layer checks passed.");

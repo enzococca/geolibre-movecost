@@ -226,9 +226,17 @@ export function groupHostLayers(
   name: string,
   layerIds: string[],
   existingGroupId: string | null,
+  options: { volatile?: boolean } = {},
 ): string | null {
   if (!layerIds.length) return existingGroupId;
   try {
+    // A "volatile" group is one whose members get removed and registered again
+    // — the markers, which are re-added to stay above a run's rasters. Without
+    // `moveLayersToGroup` a group can only be filled at the moment it is
+    // created, so the first re-add empties it and nothing can ever put a layer
+    // back in: one dead row in the Layers panel for the rest of the session.
+    // Better to leave those layers ungrouped on such a host.
+    if (options.volatile && typeof app.moveLayersToGroup !== "function") return null;
     // One group per name, for the life of the panel. A host without
     // `moveLayersToGroup` used to fall through to `addLayerGroup` on every
     // call, and since the layers follow the new group the old one is left

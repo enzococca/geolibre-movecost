@@ -146,20 +146,37 @@ raise — and `groupHostLayers()` now never creates a second group under a name 
 already holds. Two runs in the store-faithful host test must leave exactly one
 locations group and no empty ones.
 
-**Root cause pinned (2026-09-10).** The spam depends on the host: with
-`moveLayersToGroup` available the old code reused its group and behaved; without
-it, every grouping call fell through to `addLayerGroup` and the layers followed
-the new group, leaving the old one empty. A local GeoLibre built from `main`
-has the method, which is why two runs there showed one group and no
+**Root cause pinned, then finished (2026-09-10).** The spam depends on the
+host: with `moveLayersToGroup` available the old code reused its group and
+behaved; without it, every grouping call fell through to `addLayerGroup` and the
+layers followed the new group, leaving the old one empty. A local GeoLibre built
+from `main` has the method, which is why two runs there showed one group and no
 `gm_temporary` errors on both the old and the new bundle — the live A/B proved
-nothing. The headless case does: the same store-faithful host with
-`moveLayersToGroup` omitted produces **8** locations groups over three runs on
-the old code and **1** on the new. So Enzo's build (iPad, and GeoLibre Desktop)
-is one without that method.
+nothing. The headless case did: the same store-faithful host with
+`moveLayersToGroup` omitted gave **8** locations groups over three runs on the
+old code, **1** on the reuse fix — and that remaining one was still wrong,
+because a group that can only be filled at creation empties the first time the
+markers are re-added and can never be refilled. Enzo saw exactly that on the
+iPhone. So a group whose members get re-registered is now `volatile`, and on a
+host without `moveLayersToGroup` it is not created at all: the markers stay
+ungrouped, the terrain and the results still group. The test asserts zero.
+
+That iPhone run (webR in the browser, 05:53–05:55) also carried **no
+`gm_temporary` errors and no Geoman warnings at all**, which is the first
+evidence that the churn fix did what it was meant to.
 
 `scripts/check-layer-churn.mjs` drives a real GeoLibre through two analyses and
 counts the groups in the Layers panel plus every `tile manager with ID` line on
 the console; keep it for the next host-level question.
+
+**Host sprites that do not arrive.** The same run logged three
+`Image "..." could not be loaded` warnings, one per style the host has to
+generate a sprite for: `geolibre-marker-triangle-dc2626-22` when the
+destination markers appear, and `geolibre-line-decoration-arrow-e11d48-12` /
+`-f97316-12` when the paths do. One each, at the moment the layer is added, and
+the shapes rendered correctly in the desktop build — so this looks like
+MapLibre complaining before the host has finished generating the sprite. Worth
+a second look only if a triangle or an arrow is ever actually missing.
 
 **Still open:** GeoLibre Desktop logged
 `Image "geolibre-marker-triangle-dc2626-22" could not be loaded` once. It did

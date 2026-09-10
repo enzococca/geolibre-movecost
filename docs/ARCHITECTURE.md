@@ -227,10 +227,23 @@ while the group still has other members, and this group holds nothing but the
 two markers. Both come off before either goes back, so the group is momentarily
 empty, and `moveLayersToGroup` then appends them at the top — group and all.
 `groupHostLayers()` therefore never creates a second group under a name it
-already has: on a host with no `moveLayersToGroup` the markers simply stay
-ungrouped, which is a great deal better than twenty empty rows. The
-store-faithful case in `scripts/test-host-layers.mjs` runs two analyses and
-fails if either a second locations group appears or any group is left empty.
+already has.
+
+That still leaves the hosts without `moveLayersToGroup`, which is where the
+empty rows came from in the first place — GeoLibre's newer builds have it,
+older ones do not. There a group can only be filled at the moment it is
+created, so the first time the markers are re-added it empties and nothing can
+refill it: reusing one group turns twenty dead rows into one. So a group whose
+members get removed and registered again is declared `volatile`, and on a host
+that cannot move layers between groups it is not created at all — the markers
+stay ungrouped, which costs a little tidiness and no clutter. The terrain and
+each run's results are not volatile: those layers are registered once and stay
+put, so they group on every host.
+
+`scripts/test-host-layers.mjs` covers both shapes: the store-faithful host runs
+two analyses and fails if a second locations group appears or any group is left
+empty, and a second host with `moveLayersToGroup` omitted runs three and fails
+if any locations group is created at all.
 
 ## The cost surface, and why it is built once
 

@@ -1614,7 +1614,9 @@ export class MovecostPanel {
     const ids = [this.markers.origin, this.markers.destination]
       .filter((h): h is HostLayerHandle => Boolean(h))
       .map((h) => h.id);
-    this.locationsGroupId = groupHostLayers(this.app, LOCATIONS_GROUP_NAME, ids, this.locationsGroupId);
+    this.locationsGroupId = groupHostLayers(this.app, LOCATIONS_GROUP_NAME, ids, this.locationsGroupId, {
+      volatile: true,
+    });
   }
 
   /**
