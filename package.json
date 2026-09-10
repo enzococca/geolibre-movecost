@@ -1,6 +1,6 @@
 {
   "name": "geolibre-movecost",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Least-cost path, corridor, network, allocation and boundary analysis in GeoLibre, powered by the movecost R package running in WebAssembly.",
   "author": "Enzo Cocca",
   "license": "GPL-3.0-or-later",
