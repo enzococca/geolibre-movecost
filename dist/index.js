@@ -4650,8 +4650,8 @@ function addHostRasterLayer(app, raster, options) {
 function groupHostLayers(app, name, layerIds, existingGroupId) {
   if (!layerIds.length) return existingGroupId;
   try {
-    if (existingGroupId && app.moveLayersToGroup) {
-      app.moveLayersToGroup(layerIds, existingGroupId);
+    if (existingGroupId) {
+      app.moveLayersToGroup?.(layerIds, existingGroupId);
       return existingGroupId;
     }
     if (app.addLayerGroup) return app.addLayerGroup(name, layerIds) ?? null;
@@ -5135,18 +5135,6 @@ class MovecostPanel {
   /** Layers-panel groups: the DEM at the bottom, the markers on top of everything. */
   terrainGroupId = null;
   locationsGroupId = null;
-  /**
-   * Locations groups this panel made and could not remove afterwards.
-   *
-   * Raising the markers means a fresh group (the host anchors a group where
-   * its first member sits), and the old one should go. Not every host build
-   * honours `removeLayerGroup`, and one that does not leaves an empty group in
-   * the Layers panel on every single run — twenty of them by the end of a
-   * session. After a couple of failures the panel stops making new ones and
-   * reuses the group it has, which costs a little stacking order and keeps the
-   * host's Layers panel readable.
-   */
-  orphanedGroups = [];
   runCount = 0;
   rampId = "viridis";
   rasterOpacity = 0.75;
@@ -6301,37 +6289,56 @@ class MovecostPanel {
     this.groupLocations();
   }
   /**
+   * Are both markers already above every layer this plugin has added?
+   *
+   * `listLayers()` reports the host's stack bottom-to-top, so this is a
+   * comparison of positions. It is worth asking: the answer is usually yes,
+   * and raising the markers when they are already on top is pure churn.
+   */
+  markersAlreadyOnTop() {
+    const ids = (() => {
+      try {
+        return this.app.listLayers?.().map((l2) => l2.id) ?? [];
+      } catch {
+        return [];
+      }
+    })();
+    if (!ids.length) return false;
+    const markerIds = [this.markers.origin?.id, this.markers.destination?.id].filter(
+      (id) => Boolean(id)
+    );
+    if (!markerIds.length) return true;
+    const positions = markerIds.map((id) => ids.indexOf(id));
+    if (positions.some((i) => i < 0)) return false;
+    const mine = [this.terrainOverlay?.id, ...this.produced.map((p2) => p2.handle?.id)].filter(
+      (id) => Boolean(id)
+    );
+    const highestOther = Math.max(-1, ...mine.map((id) => ids.indexOf(id)));
+    return Math.min(...positions) > highestOther;
+  }
+  /**
    * Re-adds both marker layers so they sit above whatever was just added —
    * the terrain, or a run's cost rasters, which would otherwise bury them.
-   * The Layers panel keeps a group's layers together, so the markers get a
-   * fresh group each time rather than being moved into the old one.
+   *
+   * Both layers come off before either goes back: the host anchors a group
+   * where its first member sits, so re-adding one marker while the other is
+   * still low in the stack would drag the group down to it. With the group
+   * momentarily empty, moving the markers back into it appends them at the
+   * top, which is the whole point — and means no new group is needed.
+   *
+   * Every removal and re-registration makes the host rebuild its style, and a
+   * style rebuild is what drops the drawing plugin's own sources, so this only
+   * happens when something really is sitting on top of the markers.
    */
   raiseMarkers() {
     if (!this.markers.origin && !this.markers.destination) return;
-    const oldGroup = this.locationsGroupId;
-    if (this.orphanedGroups.length < 2) this.locationsGroupId = null;
+    if (this.markersAlreadyOnTop()) return;
     for (const which of ["origin", "destination"]) {
       this.markers[which]?.remove();
       this.markers[which] = null;
     }
     this.refreshMarkers("origin");
     this.refreshMarkers("destination");
-    if (oldGroup && oldGroup !== this.locationsGroupId) this.orphanedGroups.push(oldGroup);
-    this.orphanedGroups = this.orphanedGroups.filter((id) => !this.removeGroup(id));
-  }
-  /** True when the host actually removed the group. */
-  removeGroup(id) {
-    if (typeof this.app.removeLayerGroup !== "function") return false;
-    try {
-      this.app.removeLayerGroup(id);
-    } catch {
-      return false;
-    }
-    try {
-      return !this.app.listLayers?.().some((l2) => l2.groupId === id);
-    } catch {
-      return true;
-    }
   }
   clearMarkers() {
     for (const which of ["origin", "destination"]) {
