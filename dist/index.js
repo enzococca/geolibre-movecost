@@ -4752,7 +4752,7 @@ const KIND_STYLES = {
 function resultStyle(key, kind) {
   return RESULT_STYLES[key] ?? KIND_STYLES[kind] ?? {};
 }
-const PLUGIN_VERSION = "0.2.0";
+const PLUGIN_VERSION = "0.2.1";
 const ANALYSES = [
   {
     id: "paths",

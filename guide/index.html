@@ -132,7 +132,7 @@ Rscript r-backend/start.R</code></pre>
 <tr><td>Cost boundaries (isochrones)</td><td><code>mc_boundary()</code></td><td>1+ origins</td><td>The area reachable within given costs (e.g. 1 and 2 hours), as polygons with their area and perimeter.</td></tr>
 <tr><td>Ranked alternative paths</td><td><code>mc_rank()</code></td><td>1 origin, 1 destination</td><td>Several plausible routes ranked from optimal downwards, with the corridor they run through; a detour penalty controls how far apart they are pushed.</td></tr>
 </table>
-<p>Barriers — lines or polygons that movement cannot cross, such as a river, a cliff line or a wall — can be given from drawings or a layer for every analysis; a conductance value makes them merely expensive rather than impassable.</p>
+<p>Barriers — lines or polygons that movement cannot cross, such as a river, a cliff line or a wall — can be given from drawings or a layer for every analysis; a conductance value makes them merely expensive rather than impassable. <em>Use drawings</em> takes the lines and polygons you have drawn except the one currently serving as the study area, so the rectangle you dragged to download the DEM does not become an obstacle.</p>
 
 <h2 id="cost">6. Cost functions</h2>
 <p>All 26 movecost cost functions are available, grouped in the menu by what they measure:</p>
