@@ -63,9 +63,13 @@ saveRDS(meta, meta_path, version = 2)
 cat("== writing the archive\n")
 target <- normalizePath(repo_dir, mustWork = TRUE)
 tgz <- file.path(target, paste0("movecost_", version, ".tgz"))
-old <- setwd(lib)
-utils::tar(tgz, "movecost", compression = "gzip", tar = "internal")
-setwd(old)
+# Not utils::tar(): webR mounts an archive that carries a `.vfs-index.json`
+# listing every file's byte range and extracts one that does not, and a plain
+# tarball has no such index. See scripts/pack-wasm-tgz.py.
+packer <- system2("python3", c(shQuote("scripts/pack-wasm-tgz.py"), shQuote(lib), "movecost",
+                               shQuote(tgz)), stdout = TRUE, stderr = TRUE)
+cat(paste(packer, collapse = "\n"), "\n")
+if (!file.exists(tgz)) stop("packing failed")
 
 tools::write_PACKAGES(target, type = "mac.binary", latestOnly = FALSE)
 cat("== repository now carries:\n")

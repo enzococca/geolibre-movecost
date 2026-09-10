@@ -303,9 +303,35 @@ metadata in `DESCRIPTION` and `Meta/package.rds` as
 regenerates the index. The script refuses to run if a future movecost gains
 compiled code, which is exactly when the shortcut would stop being sound.
 
+The archive is written by `scripts/pack-wasm-tgz.py` rather than `utils::tar()`,
+because webR can either *mount* a package archive or extract it, and mounting is
+far cheaper: the files stay in the tarball and are served from a WORKERFS node
+instead of being unpacked into the emulated filesystem. It mounts when the tar
+carries a `.vfs-index.json` member listing each file's byte range — the
+convention rwasm's own builds follow — and says so when it does not:
+"Can't mount archive, no VFS metadata found. Falling back to traditional `.tgz`
+extraction." The paths in that index are relative to the package root
+(`/DESCRIPTION`, not `/movecost/DESCRIPTION`), since the mount point is the
+package's own directory in the library.
+
+Getting those offsets wrong is worse than not having them: `TarInfo.offset_data`
+is filled in when *reading* an archive and left at zero when writing one, so the
+first version of this shipped an index of zeros, mounted perfectly, and handed R
+the wrong bytes — `readRDS(file): unknown input format`, from a package that
+looked entirely well formed. The packer now reads its own output back and
+compares every range with the archive before compressing it.
+
+`codetools` is installed alongside the analysis packages although nothing here
+uses it. It is one of R's recommended packages, missing from the WebAssembly
+image, and `methods` warns for every S4 class it cannot check without it —
+thirty lines of "code for methods in class Rcpp_SpatRaster was not checked for
+suspicious field assignments" on the console each time terra loads. It is tiny,
+and installing it removes the cause rather than the symptom.
+
 `scripts/test-wasm-install.mjs` is the check that matters: it serves
 `build/wasm-repo` over HTTP, installs the whole stack into webR under Node
 against that repository plus upstream, and runs `mc_surface()` and `mc_paths()`
-on a synthetic DTM. Verified 2026-09-09 with movecost 3.0.0, terra 1.9.46,
-sf 1.1.1, igraph 2.3.1 and ggplot2 4.0.3.
+on a synthetic DTM. Verified 2026-09-10 with movecost 3.0.0, terra 1.9.46,
+sf 1.1.1, igraph 2.3.1 and ggplot2 4.0.3, with neither the mount warning nor a
+single `codetools` line on the console.
 

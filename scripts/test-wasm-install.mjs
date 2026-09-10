@@ -21,7 +21,7 @@ const UPSTREAM = "https://repo.r-wasm.org";
 // By default the freshly built repository is served from disk; pass a URL (the
 // published one, say) to check the repository users actually install from.
 const PUBLISHED = process.argv[2] ?? process.env.MCX_WASM_REPO ?? null;
-const PACKAGES = ["terra", "sf", "igraph", "ggplot2", "jsonlite", "movecost"];
+const PACKAGES = ["codetools", "terra", "sf", "igraph", "ggplot2", "jsonlite", "movecost"];
 
 const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
 

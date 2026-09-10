@@ -64,8 +64,16 @@ export const WASM_CRAN_REPO = WASM_CRAN_REPOS[0];
  * Installed in this order. movecost 3.0 dropped the raster/sp/gdistance/chron
  * stack for terra, sf and igraph; ggplot2 comes with it because the package
  * imports it for its plot methods, which the engine never calls.
+ *
+ * `codetools` is not used by anything here. It is one of R's recommended
+ * packages, absent from the WebAssembly image, and `methods` prints a warning
+ * for every S4 class it cannot check without it — thirty lines of "code for
+ * methods in class Rcpp_SpatRaster was not checked for suspicious field
+ * assignments" on the console every time terra loads. It is tiny, and
+ * installing it silences all of them at the source.
  */
 export const R_PACKAGES = [
+  "codetools",
   "jsonlite",
   "terra",
   "sf",
@@ -76,6 +84,7 @@ export const R_PACKAGES = [
 
 /** Rough download sizes, only used to make the progress bar honest. */
 export const R_PACKAGE_WEIGHTS: Record<string, number> = {
+  codetools: 1,
   jsonlite: 1,
   terra: 8,
   sf: 10,
