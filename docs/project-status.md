@@ -129,11 +129,34 @@ raising the markers makes a new group each time and asks the host to remove the
 old one, and that host ignores the call. The panel now gives up after two
 orphans and reuses its group.
 
+**`gm_temporary` explained (2026-09-10).** "There is no tile manager with ID
+'gm_temporary'" is **MapLibre GL JS**, not GeoLibre and not us: `Map.isSourceLoaded(id)`
+fires an `ErrorEvent` when `style.tileManagers[id]` is missing (found in
+maplibre-gl 6.9.0's `maplibre-gl-dev.mjs`). `gm_temporary` is Geoman's
+temporary drawing source — GeoLibre draws with Geoman, see `GEOMAN_SHAPE_PROPERTY`
+in `packages/map/src/layer-sync.ts` — and something polls it once a frame, hence
+dozens of identical lines 40 ms apart. It is logged, never thrown.
+
+The trigger is a style rebuild dropping sources Geoman added straight to the
+map, and what caused those rebuilds on our side was `raiseMarkers()`:
+unregistering and re-registering both marker layers, twice per run. It now runs
+only when `listLayers()` shows one of our layers actually above a marker. The
+same churn produced the empty groups — a fresh `movecost · locations` on every
+raise — and `groupHostLayers()` now never creates a second group under a name it
+already holds. Two runs in the store-faithful host test must leave exactly one
+locations group and no empty ones.
+
+**Unverified on a real host:** the Mac went offline before this could be built,
+published and tried in GeoLibre. Nothing is committed; the working copy in the
+cloud session has the changes and passes typecheck, build and the host-layer
+suite (chromium at `/opt/pw-browsers/chromium-1194/chrome-linux/chrome`, via
+`MCX_CHROMIUM`). The R suites need the Mac. Next session: sync, run
+`test-matrix.R` + `test-engine.R`, publish, and check on the iPad whether the
+`gm_temporary` bursts are gone.
+
 **Still open:** GeoLibre Desktop logged
-`Image "geolibre-marker-triangle-dc2626-22" could not be loaded` once, and a
-burst of `There is no tile manager with ID 'gm_temporary'`. Neither reproduced
-in the local web build, where the red triangles render correctly. Watch for
-them.
+`Image "geolibre-marker-triangle-dc2626-22" could not be loaded` once. It did
+not reproduce in the local web build, where the red triangles render correctly.
 
 **Gotcha for future sessions:** R on the Mac only works under
 `do shell script` with `PROJ_LIB=/opt/homebrew/share/proj` (and `GDAL_DATA`)

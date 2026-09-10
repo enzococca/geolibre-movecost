@@ -267,8 +267,17 @@ const ordering = await page.evaluate(async (bundleSource) => {
   const b64 = btoa(String.fromCharCode(...new Uint8Array(f32.buffer)));
   const raster = { name: "a", width: 4, height: 3, data: b64, bounds: { west: 0, south: 0, east: 1, north: 1 }, min: 0, max: 11 };
   const line = JSON.stringify({ type: "FeatureCollection", features: [{ type: "Feature", geometry: { type: "LineString", coordinates: [[0, 0], [1, 1]] }, properties: {} }] });
+  // Two runs, each adding layers above the markers: the panel must raise them
+  // both times without leaving an empty group behind either time.
   p.addResultsToMap({ ok: true, analysis: "paths", crs: "EPSG:32633", elapsedSeconds: 1, result: { vectors: { lcps: line }, rasters: { accumulated: raster }, tables: {} }, log: [] });
-  return { order: layers.map((l) => `${l.id.replace(/-[a-z0-9]+-\d+$/, "")}@${l.groupId}`), groups: groups.map((g) => g.name) };
+  p.addResultsToMap({ ok: true, analysis: "paths", crs: "EPSG:32633", elapsedSeconds: 1, result: { vectors: { lcps: line }, rasters: { accumulated: raster }, tables: {} }, log: [] });
+  const populated = new Set(layers.map((l) => l.groupId).filter(Boolean));
+  return {
+    order: layers.map((l) => `${l.id.replace(/-[a-z0-9]+-\d+$/, "")}@${l.groupId}`),
+    groups: groups.map((g) => g.name),
+    locationGroups: groups.filter((g) => g.name.includes("locations")).length,
+    emptyGroups: groups.filter((g) => !populated.has(g.id)).map((g) => g.name),
+  };
 }, bundle);
 
 await browser.close();
@@ -316,6 +325,8 @@ check(fallback.thumbOnly === 1, "no map: thumbnail rendered in the results list"
 
 const top2 = ordering.order.slice(-2).map((x) => x.split("@")[0]);
 check(top2.join(",") === "movecost-origin,movecost-destination", "markers end above a run's rasters and vectors (store-faithful host)", JSON.stringify(ordering.order));
+check(ordering.locationGroups === 1, "one locations group survives two runs", `${ordering.locationGroups} created`);
+check(ordering.emptyGroups.length === 0, "no empty groups left behind", JSON.stringify(ordering.emptyGroups));
 check(new Set(ordering.order.slice(-2).map((x) => x.split("@")[1])).size === 1, "both markers share one locations group after the run");
 
 console.log(failures ? `\n${failures} check(s) failed.` : "\nAll host-layer checks passed.");

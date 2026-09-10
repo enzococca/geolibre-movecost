@@ -229,8 +229,14 @@ export function groupHostLayers(
 ): string | null {
   if (!layerIds.length) return existingGroupId;
   try {
-    if (existingGroupId && app.moveLayersToGroup) {
-      app.moveLayersToGroup(layerIds, existingGroupId);
+    // One group per name, for the life of the panel. A host without
+    // `moveLayersToGroup` used to fall through to `addLayerGroup` on every
+    // call, and since the layers follow the new group the old one is left
+    // empty — a session ends with twenty empty "movecost · locations" rows in
+    // the Layers panel. Reusing the group we have costs nothing worse than
+    // markers that stay ungrouped on such a host.
+    if (existingGroupId) {
+      app.moveLayersToGroup?.(layerIds, existingGroupId);
       return existingGroupId;
     }
     if (app.addLayerGroup) return app.addLayerGroup(name, layerIds) ?? null;

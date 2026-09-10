@@ -201,6 +201,37 @@ No `getMap()` also means no click-to-place; without the registry the markers
 are plain circle layers on the map and the vectors go through
 `addGeoJsonLayer`.
 
+## Layer churn, and what it breaks
+
+Removing a registered layer and registering it again makes the host rebuild its
+map style. That rebuild drops every source added to the map directly rather
+than through the layer store — which includes the drawing plugin's own. GeoLibre
+draws with Geoman (`__gm_shape`, `__gm_text` in `packages/map/src/layer-sync.ts`),
+whose temporary source is `gm_temporary`, and something in the host polls
+`map.isSourceLoaded("gm_temporary")` once a frame. MapLibre answers a missing
+source by firing an `ErrorEvent` — "There is no tile manager with ID
+'gm_temporary'" — rather than throwing, so the console fills at frame rate until
+the source is back. Harmless, and unmistakable: dozens of identical lines
+40 ms apart, alongside Geoman's own "MapEvents: handler not found _gm:helper".
+
+So `raiseMarkers()` — which exists only so the origin and destination markers
+are not buried under a run's cost rasters — is not free, and it now runs only
+when `listLayers()` (bottom-to-top) shows something of ours actually above a
+marker. In the common case, where the points were placed after the terrain was
+downloaded, it does nothing at all.
+
+The same churn used to leave the Layers panel full of empty groups. Each raise
+started a fresh `movecost · locations` group, because moving the markers into
+the existing one was believed to drag it back down the stack; that is true only
+while the group still has other members, and this group holds nothing but the
+two markers. Both come off before either goes back, so the group is momentarily
+empty, and `moveLayersToGroup` then appends them at the top — group and all.
+`groupHostLayers()` therefore never creates a second group under a name it
+already has: on a host with no `moveLayersToGroup` the markers simply stay
+ungrouped, which is a great deal better than twenty empty rows. The
+store-faithful case in `scripts/test-host-layers.mjs` runs two analyses and
+fails if either a second locations group appears or any group is left empty.
+
 ## The cost surface, and why it is built once
 
 movecost 3.0 (CRAN, 2026-06-15) is a redesign rather than an update.
