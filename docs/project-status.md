@@ -169,6 +169,21 @@ evidence that the churn fix did what it was meant to.
 counts the groups in the Layers panel plus every `tile manager with ID` line on
 the console; keep it for the next host-level question.
 
+**Console warnings from the browser run, both fixed at source (`798e8cc`).**
+The ~30 lines of "code for methods in class Rcpp_SpatRaster was not checked for
+suspicious field assignments" come from `methods` when R's recommended
+`codetools` is absent, which it is in the WebAssembly image; it is now installed
+alongside the analysis packages. "Can't mount archive, no VFS metadata found"
+was about our own movecost tarball: webR *mounts* an archive carrying a
+`.vfs-index.json` of byte ranges and extracts one that does not, and
+`utils::tar()` writes no such index. `scripts/pack-wasm-tgz.py` now builds the
+archive with it — and reads its own output back to check every range, because
+`TarInfo.offset_data` is only filled in when reading an archive: the first
+attempt shipped an index of zeros, mounted perfectly, and handed R the wrong
+bytes ("readRDS(file): unknown input format" from a package that looked fine).
+Verified in webR under Node: neither warning, and the install is a little faster
+for being mounted.
+
 **Host sprites that do not arrive.** The same run logged three
 `Image "..." could not be loaded` warnings, one per style the host has to
 generate a sprite for: `geolibre-marker-triangle-dc2626-22` when the
