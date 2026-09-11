@@ -30,6 +30,24 @@ Open, and ours: the guide's third install route points at the GitHub
 `build/movecost-<version>.zip` and it passes `check-plugin-zip.py`; cutting the
 release is a one-liner, waiting on Enzo since it publishes publicly.
 
+## Updating the registry entry (2026-09-11)
+
+`scripts/update-registry.sh` (it lived in the gitignored `build/` until now, which
+was asking for trouble) copies the bundle into a checkout of the fork, rewrites
+`plugins/movecost/plugin.json` for the registry's layout — bundle beside the
+manifest, plus the author and homepage the zip verifier refuses in the plugin's
+own manifest — updates the registry entry and runs the repository's `minify` and
+`validate`.
+
+It edits `plugin-registry.json` **as text, one field at a time**. The earlier
+version reparsed and dumped it, which expanded every plugin's `categories` array
+onto separate lines: a forty-line diff to change a version string, which giswqs
+had to undo with prettier (`ea90e45`). Prettier is not a dependency of that repo,
+so matching its output is not something we can automate — not touching the rest
+of the file is. Re-running the script now produces an empty `git diff`.
+
+Pull the fork before running it: the maintainer pushes to the PR branch.
+
 ## Plugin registry submission — PR OPEN
 
 **https://github.com/opengeos/geolibre-plugins/pull/54** (opened 2026-09-09,
