@@ -4480,6 +4480,13 @@ function addRasterOverlay(app, raster, options) {
       stopWatching();
       removeOverlay(map, id, sourceId);
     },
+    // Stop healing, leave the picture. For a panel that is being disposed of
+    // while the user keeps the terrain layer: the watchers must not outlive
+    // their owner, but the layer they were guarding is still wanted.
+    release: () => {
+      removed = true;
+      stopWatching();
+    },
     setVisible: (next) => {
       visible = next;
       ensure();
@@ -4608,6 +4615,7 @@ function addHostRasterLayer(app, raster, options) {
       name: options.name,
       bounds,
       remove: overlay.remove,
+      release: overlay.release,
       setVisible: overlay.setVisible,
       setOpacity: overlay.setOpacity
     };
@@ -4752,7 +4760,7 @@ const KIND_STYLES = {
 function resultStyle(key, kind) {
   return RESULT_STYLES[key] ?? KIND_STYLES[kind] ?? {};
 }
-const PLUGIN_VERSION = "0.2.1";
+const PLUGIN_VERSION = "0.2.2";
 const ANALYSES = [
   {
     id: "paths",
@@ -5174,13 +5182,6 @@ class MovecostPanel {
     return { budget, wanted, fits, reduced: fits.zoom < requested, overBudget: fits.cells > budget.cells };
   }
   /**
-   * A copy of webR shipped alongside the plugin manifest takes precedence over
-   * the CDN default. Returns undefined — and so the default — when none is.
-   */
-  webrBaseUrl() {
-    return this.pluginAsset("webr/") ?? void 0;
-  }
-  /**
    * The repository published next to the manifest, when there is one. That is
    * where the rebuilt terra lives (docs/TERRA-WASM.md): the plugin site puts it
    * at `wasm-repo/`, so a manifest-URL install finds it with no configuration.
@@ -5217,7 +5218,21 @@ class MovecostPanel {
     if (this.backendProbe) return this.backendProbe;
     this.backendProbe = (async () => {
       const health = await probeBackend(DEFAULT_BACKEND_URL);
-      const backend = health ? new HttpBackend(DEFAULT_BACKEND_URL, health.versions ?? null) : new MovecostEngine(this.webrBaseUrl(), this.pluginRepos());
+      const backend = health ? new HttpBackend(DEFAULT_BACKEND_URL, health.versions ?? null) : (
+        // webR itself comes from the CDN in config.ts, never from beside the
+        // manifest. `resolvePluginAssetUrl()` only joins paths — it cannot
+        // know whether anything is there — and nothing this project
+        // publishes ships a copy of webR: not the Pages site, not the
+        // registry entry, not the zip. Resolving it locally handed webR a
+        // URL for a `webr-worker.js` that does not exist, and on a host
+        // implementing that call the in-browser backend could never start.
+        //
+        // `pluginRepos()` still uses the resolver, because a `wasm-repo/` is
+        // genuinely published next to the manifest and a repository that
+        // turns out to be absent is survivable: webR moves on to the next in
+        // the list, which is the published one.
+        new MovecostEngine(void 0, this.pluginRepos())
+      );
       this.backendNote = health ? null : isMobileDevice() ? `R runs in the page on this device. The first run downloads about 65 MB and takes a few minutes; after that, a small study area answers in seconds. Keep the area modest.` : `No local R service on ${DEFAULT_BACKEND_URL}, so R runs in the page. That works, but it is roughly a hundred times slower. The first run fetches about 65 MB. For real work, start the R service (r-backend/README.md) and press Recheck.`;
       this.disposeProgress = backend.onProgress((event) => {
         this.progress = event.phase === "done" || event.phase === "error" ? null : event;
@@ -5277,6 +5292,9 @@ class MovecostPanel {
   dispose() {
     this.cancelPicking();
     this.clearMarkers();
+    this.terrainOverlay?.release?.();
+    this.terrainOverlay = null;
+    this.terrainPreview = null;
     this.disposeProgress?.();
     void this.backend?.close();
   }
@@ -6057,7 +6075,7 @@ class MovecostPanel {
       () => void this.run(),
       "primary"
     );
-    run.disabled = this.busy || !this.dtm;
+    run.disabled = this.busy || !this.hasTerrain();
     const section = el(
       "section",
       { class: "mcx-section mcx-section--run" },
@@ -6148,6 +6166,16 @@ class MovecostPanel {
   }
   // --- behaviour -------------------------------------------------------------
   async loadDtm(file) {
+    const budget = this.cellBudget();
+    const ceiling = budget.cells * 200;
+    if (file.size > ceiling) {
+      this.message = {
+        text: `${file.name} is ${formatBytes(file.size)}, more than ${formatBytes(ceiling)}, which is as much as ${budget.where} can take. Clip it to the area you need, or coarsen it, and load it again.`,
+        tone: "error"
+      };
+      this.render();
+      return;
+    }
     try {
       const buffer = await file.arrayBuffer();
       this.dtm = { name: file.name, bytes: new Uint8Array(buffer) };
@@ -6394,9 +6422,19 @@ class MovecostPanel {
     if (!this.dtm && this.useArea) params.zoom = this.demZoom;
     return params;
   }
+  /**
+   * Terrain the analysis can run on: a DTM in hand, or a study area movecost
+   * will fetch elevation for itself. The Run button and `validate()` both ask
+   * this, because they used to decide separately — and disagreed: the button
+   * required a DTM, so "Use area directly" was offered, accepted by the
+   * validator, and then never runnable.
+   */
+  hasTerrain() {
+    return Boolean(this.dtm) || Boolean(this.useArea && this.area);
+  }
   validate(params) {
     const spec = getAnalysis(this.analysis);
-    if (!this.dtm && !(this.useArea && this.area)) {
+    if (!this.hasTerrain()) {
       return "Load a DTM, download one for an area, or choose to use the area directly.";
     }
     if (this.origin.features.length < spec.origin.min) {
