@@ -331,6 +331,56 @@ const useArea = await page.evaluate(async (bundleSource) => {
   return { withoutTerrain, withArea, validates: p.validate(p.collectParams()) };
 }, bundle);
 
+// --- the download progress bar sits under the button that started it --------
+// The run section is at the bottom of a long panel, so a bar reported there
+// during a DEM download was often below the fold, under a button the user had
+// not pressed.
+const progressPlacement = await page.evaluate(async (bundleSource) => {
+  const app = {
+    addGeoJsonLayer: () => "x", addMapControl: () => true, removeMapControl() {},
+    getMap: () => null, registerRightPanel: () => () => {},
+  };
+  const mod = await import(URL.createObjectURL(new Blob([bundleSource], { type: "text/javascript" })));
+  const p = new mod.MovecostPanel(app);
+  const host = document.getElementById("panel");
+  const where = () => {
+    const bar = host.querySelector(".mcx-progress");
+    const section = bar?.closest(".mcx-section");
+    const labels = section ? [...section.querySelectorAll("button")].map((b) => b.textContent.trim()) : [];
+    return {
+      bar: Boolean(bar),
+      withDownload: labels.some((l) => /^Download DEM$|^Downloading/.test(l)),
+      withRun: labels.some((l) => /^Run analysis$|^Running/.test(l)),
+    };
+  };
+
+  p.area = {
+    features: [{
+      type: "Feature",
+      geometry: { type: "Polygon", coordinates: [[[14, 40], [15, 40], [15, 41], [14, 41], [14, 40]]] },
+      properties: {},
+    }],
+    label: "drawn polygon",
+  };
+
+  // 1. downloading: under the Download button
+  p.downloadingDem = true;
+  p.progress = { phase: "running", message: "Fetching elevation tiles… 2/8", fraction: 0.25 };
+  host.innerHTML = ""; p.mount(host);
+  const duringDownload = where();
+
+  // 2. running an analysis: back under Run, and not left behind in the other host
+  p.downloadingDem = false;
+  p.previewingTerrain = false;
+  p.busy = true;
+  p.progress = { phase: "running", message: "Installing R package terra…", fraction: null };
+  host.innerHTML = ""; p.mount(host);
+  const duringRun = where();
+  const bars = host.querySelectorAll(".mcx-progress").length;
+
+  return { duringDownload, duringRun, bars };
+}, bundle);
+
 // --- a host with no moveLayersToGroup ---------------------------------------
 // GeoLibre's newer builds can move layers between groups; older ones cannot,
 // and that is the case that filled a user's Layers panel with twenty empty
@@ -424,6 +474,11 @@ const top2 = ordering.order.slice(-2).map((x) => x.split("@")[0]);
 check(top2.join(",") === "movecost-origin,movecost-destination", "markers end above a run's rasters and vectors (store-faithful host)", JSON.stringify(ordering.order));
 check(ordering.locationGroups === 1, "one locations group survives two runs", `${ordering.locationGroups} created`);
 check(ordering.emptyGroups.length === 0, "no empty groups left behind", JSON.stringify(ordering.emptyGroups));
+check(progressPlacement.duringDownload.bar && progressPlacement.duringDownload.withDownload && !progressPlacement.duringDownload.withRun,
+  "the DEM progress bar renders under the Download button", JSON.stringify(progressPlacement.duringDownload));
+check(progressPlacement.duringRun.bar && progressPlacement.duringRun.withRun && !progressPlacement.duringRun.withDownload,
+  "an analysis reports in the run section as before", JSON.stringify(progressPlacement.duringRun));
+check(progressPlacement.bars === 1, "only one progress bar at a time", `${progressPlacement.bars} rendered`);
 check(useArea.withoutTerrain === true, "Run is disabled with no terrain at all");
 check(useArea.withArea === false, "Run is enabled in \"use area directly\" mode", `validate: ${useArea.validates ?? "ok"}`);
 check(noMove.locationGroups === 0, "no locations group at all on a host that cannot move layers", `${noMove.locationGroups} created over three runs`);

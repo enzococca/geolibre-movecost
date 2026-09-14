@@ -413,6 +413,16 @@ export class MovecostPanel {
   }
 
   private statusHost: HTMLElement | null = null;
+  /**
+   * The progress bar has a second home directly under the Download DEM button.
+   *
+   * The run section is at the bottom of a long panel, so a download started
+   * from the terrain section reported itself somewhere the user was not
+   * looking — often below the fold. While terrain work is in flight the bar
+   * goes where the button that started it is.
+   */
+  private terrainStatusHost: HTMLElement | null = null;
+  private previewingTerrain = false;
 
   /**
    * Say what the panel is doing, and how far along when that is known.
@@ -435,8 +445,14 @@ export class MovecostPanel {
   }
 
   private renderStatus(): void {
-    if (!this.statusHost) return;
-    clear(this.statusHost);
+    // Both hosts are cleared every time: whichever one the bar has just left
+    // would otherwise keep showing the last thing it was told.
+    if (this.statusHost) clear(this.statusHost);
+    if (this.terrainStatusHost) clear(this.terrainStatusHost);
+    const terrainBusy = this.downloadingDem || this.previewingTerrain;
+    const progressHost =
+      terrainBusy && this.terrainStatusHost ? this.terrainStatusHost : this.statusHost;
+    if (!progressHost) return;
     if (this.progress) {
       const bar = el("div", { class: "mcx-progress" });
       const fill = el("div", { class: "mcx-progress__fill" });
@@ -446,9 +462,9 @@ export class MovecostPanel {
         fill.style.width = `${Math.round(this.progress.fraction * 100)}%`;
       }
       bar.append(fill);
-      this.statusHost.append(el("p", { class: "mcx-status", text: this.progress.message }), bar);
+      progressHost.append(el("p", { class: "mcx-status", text: this.progress.message }), bar);
     }
-    if (this.message) {
+    if (this.message && this.statusHost) {
       this.statusHost.append(note(this.message.text, this.message.tone));
     }
   }
@@ -708,6 +724,10 @@ export class MovecostPanel {
     }
 
     children.push(el("div", { class: "mcx-actions" }, download, direct));
+
+    const terrainStatus = el("div", { class: "mcx-status-host" });
+    this.terrainStatusHost = terrainStatus;
+    children.push(terrainStatus);
     if (!viaService && viaTiles) {
       children.push(
         el("p", {
@@ -1460,6 +1480,7 @@ export class MovecostPanel {
     const size = this.dtm.summary
       ? `${this.dtm.summary.width.toLocaleString()} × ${this.dtm.summary.height.toLocaleString()} cells`
       : this.dtm.name;
+    this.previewingTerrain = true;
     this.setProgress(`Drawing ${size} on the map…`);
     try {
       const preview = await backend.previewDtm(this.dtm.bytes, this.dtm.handle ?? null);
@@ -1481,6 +1502,7 @@ export class MovecostPanel {
         tone: "warn",
       };
     }
+    this.previewingTerrain = false;
     this.progress = null;
     this.render();
   }
