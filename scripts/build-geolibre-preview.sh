@@ -37,7 +37,15 @@ PY
 echo "== baked in: $(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["version"])' "$dest/plugin.json")"
 
 cd "$APP"
-[ -d node_modules ] || npm ci
+# Reinstall when the lockfile moves, not only when node_modules is missing:
+# resetting the checkout to a newer main while keeping the old dependencies
+# fails the build inside GeoLibre's own code, which looks alarmingly like the
+# plugin broke it.
+lock_hash=$(shasum -a 256 package-lock.json | cut -d' ' -f1)
+if [ ! -d node_modules ] || [ "$(cat node_modules/.mcx-lock-hash 2>/dev/null)" != "$lock_hash" ]; then
+  npm ci
+  echo "$lock_hash" > node_modules/.mcx-lock-hash
+fi
 GEOLIBRE_APP_BASE=./ npm run build -w geolibre-desktop
 find apps/geolibre-desktop/dist -name .gitignore -delete
 test -f apps/geolibre-desktop/dist/plugins/movecost/plugin.json \

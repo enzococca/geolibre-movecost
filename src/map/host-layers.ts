@@ -33,6 +33,12 @@ export interface HostLayerHandle {
   remove: () => void;
   setVisible: (visible: boolean) => void;
   setOpacity: (opacity: number) => void;
+  /**
+   * Let go of the layer without taking it off the map: any watchers this
+   * handle installed come off, the layer stays. Only the fallback overlay has
+   * anything to release; a host-owned layer needs nothing.
+   */
+  release?: () => void;
 }
 
 export function hostOwnsLayers(app: GeoLibreAppAPI): boolean {
@@ -167,6 +173,7 @@ export function addHostRasterLayer(
       name: options.name,
       bounds,
       remove: overlay.remove,
+      release: overlay.release,
       setVisible: overlay.setVisible,
       setOpacity: overlay.setOpacity,
     };

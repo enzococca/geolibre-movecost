@@ -192,7 +192,24 @@ const fallback = await page.evaluate(async (bundleSource) => {
   fire("style.load");
   const afterRemove = { layer: layers.has(id), source: sources.has(`${id}-source`) };
 
-  // 4. No map at all: the panel keeps a thumbnail.
+  // 4. dispose() lets go of the terrain overlay without taking it off the map:
+  // the layer the user may want to keep stays, the style watchers do not, and
+  // a second activation does not find them still re-adding a dead layer.
+  const pt = new mod.MovecostPanel(app);
+  pt.addResultsToMap(response);
+  const terrainHandle = pt.produced.find((x) => x.kind === "raster")?.handle;
+  const terrainId = terrainHandle.id;
+  // Stand it in for the terrain overlay, which is the one dispose() must let
+  // go of without removing.
+  pt.produced = [];
+  pt.terrainOverlay = terrainHandle;
+  pt.dispose();
+  const keptAfterDispose = layers.has(terrainId);
+  layers.clear(); sources.clear();
+  fire("style.load");
+  const healedAfterDispose = layers.has(terrainId);
+
+  // 5. No map at all: the panel keeps a thumbnail.
   const p2 = new mod.MovecostPanel({ ...app, getMap: () => null });
   p2.addResultsToMap(response);
   const preview = p2.produced[0]?.preview;
@@ -202,7 +219,7 @@ const fallback = await page.evaluate(async (bundleSource) => {
   p2.mount(host);
   const thumbOnly = document.querySelectorAll("#panel .mcx-thumb--only canvas").length;
 
-  return { initialOpacity, healed, reAdded, afterRemove, noMap, thumbOnly };
+  return { initialOpacity, healed, reAdded, afterRemove, keptAfterDispose, healedAfterDispose, noMap, thumbOnly };
 }, bundle);
 
 // --- store-faithful host: layer order after a run ---------------------------
@@ -278,6 +295,40 @@ const ordering = await page.evaluate(async (bundleSource) => {
     locationGroups: groups.filter((g) => g.name.includes("locations")).length,
     emptyGroups: groups.filter((g) => !populated.has(g.id)).map((g) => g.name),
   };
+}, bundle);
+
+// --- "use area directly": offered, validated, and actually runnable -----------
+// The button used to require a DTM while the validator accepted a study area,
+// so the mode was reachable in the form and never in the button.
+const useArea = await page.evaluate(async (bundleSource) => {
+  const app = {
+    addGeoJsonLayer: () => "x", addMapControl: () => true, removeMapControl() {},
+    getMap: () => null, registerRightPanel: () => () => {},
+  };
+  const mod = await import(URL.createObjectURL(new Blob([bundleSource], { type: "text/javascript" })));
+  const p = new mod.MovecostPanel(app);
+  const pt = (x) => ({ type: "Feature", geometry: { type: "Point", coordinates: [x, x] }, properties: {} });
+  const poly = {
+    type: "Feature",
+    geometry: { type: "Polygon", coordinates: [[[14, 40], [15, 40], [15, 41], [14, 41], [14, 40]]] },
+    properties: {},
+  };
+  p.origin = { kind: "click", label: "x", features: [pt(1)] };
+  p.destination = { kind: "click", label: "x", features: [pt(2)] };
+  const host = document.getElementById("panel");
+
+  const runButton = () =>
+    [...host.querySelectorAll("button")].find((b) => b.textContent.trim() === "Run analysis");
+
+  host.innerHTML = ""; p.mount(host);
+  const withoutTerrain = runButton()?.disabled;
+
+  p.area = { features: [poly], label: "drawn polygon" };
+  p.useArea = true;
+  host.innerHTML = ""; p.mount(host);
+  const withArea = runButton()?.disabled;
+
+  return { withoutTerrain, withArea, validates: p.validate(p.collectParams()) };
 }, bundle);
 
 // --- a host with no moveLayersToGroup ---------------------------------------
@@ -364,6 +415,8 @@ check(fallback.initialOpacity === 0.75, "fallback overlay starts at the panel op
 check(fallback.healed.opacity === 0.75 && fallback.healed.visibility === "visible" && fallback.healed.onTop, "fallback overlay heals opacity, visibility and order after a host pass", JSON.stringify(fallback.healed));
 check(fallback.reAdded.layer && fallback.reAdded.source, "fallback overlay re-adds itself after a style reload", JSON.stringify(fallback.reAdded));
 check(!fallback.afterRemove.layer && !fallback.afterRemove.source, "removed overlay stays removed", JSON.stringify(fallback.afterRemove));
+check(fallback.keptAfterDispose === true, "dispose keeps the terrain layer on the map");
+check(fallback.healedAfterDispose === false, "dispose detaches the overlay's style watchers");
 check(fallback.noMap.produced === 1 && fallback.noMap.handle === null && fallback.noMap.thumb?.[0] === 4, "no map: raster kept as a panel thumbnail", JSON.stringify(fallback.noMap));
 check(fallback.thumbOnly === 1, "no map: thumbnail rendered in the results list", String(fallback.thumbOnly));
 
@@ -371,6 +424,8 @@ const top2 = ordering.order.slice(-2).map((x) => x.split("@")[0]);
 check(top2.join(",") === "movecost-origin,movecost-destination", "markers end above a run's rasters and vectors (store-faithful host)", JSON.stringify(ordering.order));
 check(ordering.locationGroups === 1, "one locations group survives two runs", `${ordering.locationGroups} created`);
 check(ordering.emptyGroups.length === 0, "no empty groups left behind", JSON.stringify(ordering.emptyGroups));
+check(useArea.withoutTerrain === true, "Run is disabled with no terrain at all");
+check(useArea.withArea === false, "Run is enabled in \"use area directly\" mode", `validate: ${useArea.validates ?? "ok"}`);
 check(noMove.locationGroups === 0, "no locations group at all on a host that cannot move layers", `${noMove.locationGroups} created over three runs`);
 check(new Set(ordering.order.slice(-2).map((x) => x.split("@")[1])).size === 1, "both markers share one locations group after the run");
 

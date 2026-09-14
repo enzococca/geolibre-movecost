@@ -174,6 +174,8 @@ export interface OverlayHandle {
   layerId: string;
   bounds: [number, number, number, number];
   remove: () => void;
+  /** Detach the style watchers and leave the layer where it is. */
+  release: () => void;
   setVisible: (visible: boolean) => void;
   setOpacity: (opacity: number) => void;
 }
@@ -275,6 +277,13 @@ export function addRasterOverlay(
       removed = true;
       stopWatching();
       removeOverlay(map, id, sourceId);
+    },
+    // Stop healing, leave the picture. For a panel that is being disposed of
+    // while the user keeps the terrain layer: the watchers must not outlive
+    // their owner, but the layer they were guarding is still wanted.
+    release: () => {
+      removed = true;
+      stopWatching();
     },
     setVisible: (next) => {
       visible = next;

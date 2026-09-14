@@ -252,14 +252,6 @@ export class MovecostPanel {
   }
 
   /**
-   * A copy of webR shipped alongside the plugin manifest takes precedence over
-   * the CDN default. Returns undefined — and so the default — when none is.
-   */
-  private webrBaseUrl(): string | undefined {
-    return this.pluginAsset("webr/") ?? undefined;
-  }
-
-  /**
    * The repository published next to the manifest, when there is one. That is
    * where the rebuilt terra lives (docs/TERRA-WASM.md): the plugin site puts it
    * at `wasm-repo/`, so a manifest-URL install finds it with no configuration.
@@ -302,7 +294,19 @@ export class MovecostPanel {
       const health = await probeBackend(DEFAULT_BACKEND_URL);
       const backend: AnalysisBackend = health
         ? new HttpBackend(DEFAULT_BACKEND_URL, health.versions ?? null)
-        : new MovecostEngine(this.webrBaseUrl(), this.pluginRepos());
+        : // webR itself comes from the CDN in config.ts, never from beside the
+          // manifest. `resolvePluginAssetUrl()` only joins paths — it cannot
+          // know whether anything is there — and nothing this project
+          // publishes ships a copy of webR: not the Pages site, not the
+          // registry entry, not the zip. Resolving it locally handed webR a
+          // URL for a `webr-worker.js` that does not exist, and on a host
+          // implementing that call the in-browser backend could never start.
+          //
+          // `pluginRepos()` still uses the resolver, because a `wasm-repo/` is
+          // genuinely published next to the manifest and a repository that
+          // turns out to be absent is survivable: webR moves on to the next in
+          // the list, which is the published one.
+          new MovecostEngine(undefined, this.pluginRepos());
       this.backendNote = health
         ? null
         : isMobileDevice()
@@ -378,6 +382,13 @@ export class MovecostPanel {
   dispose(): void {
     this.cancelPicking();
     this.clearMarkers();
+    // The terrain layer stays — see above — but the panel that owns it is
+    // going away, so the fallback overlay's style watchers must come off with
+    // it. Left attached they keep re-adding a layer nobody owns any more, and
+    // a second activation registers the same id on top of them.
+    this.terrainOverlay?.release?.();
+    this.terrainOverlay = null;
+    this.terrainPreview = null;
     this.disposeProgress?.();
     void this.backend?.close();
   }
@@ -1268,7 +1279,7 @@ export class MovecostPanel {
       () => void this.run(),
       "primary",
     );
-    run.disabled = this.busy || !this.dtm;
+    run.disabled = this.busy || !this.hasTerrain();
 
     const section = el(
       "section",
@@ -1376,6 +1387,25 @@ export class MovecostPanel {
   // --- behaviour -------------------------------------------------------------
 
   private async loadDtm(file: File): Promise<void> {
+    // Read in one go and held in memory on both sides, so an unreasonable file
+    // is refused before it is read rather than after the heap is gone. The
+    // ceiling is deliberately generous: it is there to catch the whole-country
+    // GeoTIFF, not to second-guess a real one. What the analysis can actually
+    // chew through is the cell budget, and the panel says so once the DTM is
+    // loaded and its dimensions are known.
+    const budget = this.cellBudget();
+    const ceiling = budget.cells * 200;
+    if (file.size > ceiling) {
+      this.message = {
+        text:
+          `${file.name} is ${formatBytes(file.size)}, more than ${formatBytes(ceiling)}, ` +
+          `which is as much as ${budget.where} can take. Clip it to the area you need, ` +
+          `or coarsen it, and load it again.`,
+        tone: "error",
+      };
+      this.render();
+      return;
+    }
     try {
       const buffer = await file.arrayBuffer();
       this.dtm = { name: file.name, bytes: new Uint8Array(buffer) };
@@ -1655,9 +1685,20 @@ export class MovecostPanel {
     return params;
   }
 
+  /**
+   * Terrain the analysis can run on: a DTM in hand, or a study area movecost
+   * will fetch elevation for itself. The Run button and `validate()` both ask
+   * this, because they used to decide separately — and disagreed: the button
+   * required a DTM, so "Use area directly" was offered, accepted by the
+   * validator, and then never runnable.
+   */
+  private hasTerrain(): boolean {
+    return Boolean(this.dtm) || Boolean(this.useArea && this.area);
+  }
+
   private validate(params: AnalysisParams): string | null {
     const spec = getAnalysis(this.analysis);
-    if (!this.dtm && !(this.useArea && this.area)) {
+    if (!this.hasTerrain()) {
       return "Load a DTM, download one for an area, or choose to use the area directly.";
     }
     if (this.origin.features.length < spec.origin.min) {
