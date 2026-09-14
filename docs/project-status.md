@@ -2,7 +2,7 @@
 
 Project lives at `~/geolibre-movecost` on the Mac (mac-home) and on GitHub at
 **https://github.com/enzococca/geolibre-movecost** (main + orphan `gh-pages`).
-Version 0.2.1. GeoLibre is 2.9.0 on both the Mac and the iPad.
+Version 0.2.2. GeoLibre is 2.9.0 on both the Mac and the iPad.
 
 **Published manifest (permanent):**
 `https://enzococca.github.io/geolibre-movecost/plugin.json`
@@ -29,6 +29,43 @@ Open, and ours: the guide's third install route points at the GitHub
 **releases** page, which is empty. `npm run package` builds
 `build/movecost-<version>.zip` and it passes `check-plugin-zip.py`; cutting the
 release is a one-liner, waiting on Enzo since it publishes publicly.
+
+## Registry review findings — fixed in 0.2.2 (2026-09-14, `29131e1`)
+
+Codex left three on the PR; all three were real.
+
+**webR was resolved from beside the manifest.** `webrBaseUrl()` used
+`resolvePluginAssetUrl("movecost", "webr/")`, which only joins paths — nothing
+we publish ships webR. GeoLibre's `pluginAssetUrlFromSource()` (in
+`apps/geolibre-desktop/src/lib/plugin-asset-url.ts`) answers for plugins loaded
+from a **managed URL** and returns null for one baked into the build, so the
+registry path was safe and the manifest-URL path — the iPad and Android route —
+was not: webR got a `webr-worker.js` that does not exist. It now always comes
+from the CDN. `pluginRepos()` still uses the resolver on purpose: `wasm-repo/`
+is genuinely published, and webR survives a repository that is not there.
+
+Note the old devices never hit it: GeoLibre 2.9.0 has no `resolvePluginAssetUrl`,
+so the call returned undefined and the CDN was used. The local checkout of
+GeoLibre `main` is 3.0.0 and does have it.
+
+**"Use area directly" was unreachable** — the Run button wanted a DTM while
+`validate()` accepted a study area. Both now call `hasTerrain()`.
+
+**`dispose()` left the fallback overlay's watchers attached.** Keeping the
+terrain layer is deliberate; keeping its watchers was not. `OverlayHandle`
+gained `release()` — detach, do not remove.
+
+Plus the minor note: `loadDtm()` refuses a file above a ceiling derived from the
+cell budget before reading it.
+
+Four checks added to `test-host-layers.mjs`, and verified live against GeoLibre
+built from `main` with the plugin baked in: two analyses through webR with the R
+service stopped, one locations group, no console errors.
+
+**`build-geolibre-preview.sh` now reinstalls when the lockfile moves.** Resetting
+the checkout to a newer `main` while keeping old `node_modules` failed the build
+inside GeoLibre's own `maplibre-raster.ts` — which reads exactly like the plugin
+broke the app, and does not.
 
 ## Updating the registry entry (2026-09-11)
 
