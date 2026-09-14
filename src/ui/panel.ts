@@ -414,6 +414,26 @@ export class MovecostPanel {
 
   private statusHost: HTMLElement | null = null;
 
+  /**
+   * Say what the panel is doing, and how far along when that is known.
+   *
+   * Most of a DEM download narrates itself already: the tile loop counts its
+   * own steps, and the backends emit events for the request, the R runtime,
+   * each package and the projection. What was left silent is the step after
+   * the numbers stop — decoding the DTM and painting it, several seconds on a
+   * large grid with nothing on screen to say so.
+   *
+   * Those engine events arrive through `backend.onProgress` and overwrite
+   * whatever is set here while they last, which is the right precedence: when
+   * the first run of a session is waiting on 40 MB of R, saying so matters
+   * more than naming the step that asked for it. Anything set here is
+   * therefore for the gaps between them, not a competing narration.
+   */
+  private setProgress(message: string, fraction: number | null = null): void {
+    this.progress = { phase: "running", message, fraction };
+    this.renderStatus();
+  }
+
   private renderStatus(): void {
     if (!this.statusHost) return;
     clear(this.statusHost);
@@ -773,6 +793,7 @@ export class MovecostPanel {
       const areaGeoJson = JSON.stringify(toFeatureCollection(this.area.features));
       let result;
       if (viaService) {
+        // The service backend emits its own progress for this call.
         result = await backend.fetchDem!(areaGeoJson, this.demZoom);
       } else {
         // The Terrarium tiles' zoom is the level the menu names (see
@@ -787,14 +808,14 @@ export class MovecostPanel {
         }
         const tileZoom = plan?.fits.zoom ?? Math.min(15, this.demZoom);
         const reducedTo = plan?.reduced ? tileZoom : null;
+        this.setProgress(`Fetching elevation tiles at detail level ${tileZoom}…`, 0);
         const grid = await fetchTerrariumGrid(this.area.features, tileZoom, (done, total) => {
-          this.progress = {
-            phase: "running",
-            message: `Fetching elevation tiles… ${done}/${total}`,
-            fraction: total ? done / total : null,
-          };
-          this.renderStatus();
+          this.setProgress(
+            `Fetching elevation tiles… ${done}/${total}`,
+            total ? done / total : null,
+          );
         });
+        // The engine reports the projection itself, from inside the call.
         result = await backend.dtmFromGrid!(grid, areaGeoJson, { maxCells: this.cellBudget().cells });
         result.summary.zoom = reducedTo ?? this.demZoom;
         if (reducedTo !== null) {
@@ -830,6 +851,7 @@ export class MovecostPanel {
       this.message = { text: `DEM download failed: ${describeError(error)}`, tone: "error" };
     } finally {
       this.downloadingDem = false;
+      this.progress = null;
       this.render();
     }
   }
@@ -1433,6 +1455,12 @@ export class MovecostPanel {
     const backend = await this.resolveBackend();
     if (typeof backend.previewDtm !== "function") return;
 
+    // Reached from both the download and the upload path, and on a large grid
+    // it is several seconds of R downsampling and painting a canvas.
+    const size = this.dtm.summary
+      ? `${this.dtm.summary.width.toLocaleString()} × ${this.dtm.summary.height.toLocaleString()} cells`
+      : this.dtm.name;
+    this.setProgress(`Drawing ${size} on the map…`);
     try {
       const preview = await backend.previewDtm(this.dtm.bytes, this.dtm.handle ?? null);
       this.terrainPreview = preview;
@@ -1453,6 +1481,7 @@ export class MovecostPanel {
         tone: "warn",
       };
     }
+    this.progress = null;
     this.render();
   }
 
