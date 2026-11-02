@@ -679,7 +679,11 @@ export class MovecostPanel {
       }
       const n = Number(raw);
       if (!Number.isFinite(n) || n < 0) return null;
-      rows.push({ class: klass, N: n });
+      // Always a string on the wire: a column mixing numbers and "Inf" does
+      // not survive jsonlite's data-frame round-trip on the R service (it
+      // becomes a list column and reserialises as NA). R's as.numeric()
+      // reads "0.8" and "Inf" alike.
+      rows.push({ class: klass, N: String(n) });
     }
     return rows;
   }
