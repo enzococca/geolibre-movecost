@@ -79,7 +79,12 @@ await page.waitForSelector(".maplibregl-canvas");
 await page.waitForTimeout(4000);
 
 // --- 1. Activate the plugin and open the panel ------------------------------
-await menu(/^Plugins$/, /movecost — least-cost analysis/);
+// GeoLibre moved external plugins under Plugins → Installed (late 2026).
+await page.getByRole("button", { name: /^Plugins$/ }).first().click();
+await page.waitForTimeout(500);
+await page.getByText(/^Installed$/).first().click();
+await page.waitForTimeout(500);
+await page.getByText(/movecost — least-cost analysis/).first().click();
 await page.waitForTimeout(2000);
 await shot("01-plugin-activated");
 await menu(/^movecost$/, /Open the movecost panel/);
@@ -88,7 +93,7 @@ await shot("02-panel-open");
 
 // --- 2. Load the walkthrough layers -----------------------------------------
 const loadVector = async (file) => {
-  await menu(/^Add Data$/, /^Vector Layer$/);
+  await menu(/^Add data$/i, /^Vector Layer$/i);
   await page.waitForTimeout(1500);
   const input = page.locator("input[type='url']").first();
   await input.fill(`${dataBase}/${file}`);
