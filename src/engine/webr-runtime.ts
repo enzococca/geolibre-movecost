@@ -163,6 +163,7 @@ export class MovecostEngine implements AnalysisBackend {
 
     const encoder = new TextEncoder();
     const dtmPath = inputs.dtm && !inputs.dtmHandle ? `${dir}/dtm.tif` : null;
+    const terrainPath = inputs.terrain ? `${dir}/terrain.tif` : null;
     const studyplotPath = inputs.studyplot ? `${dir}/studyplot.geojson` : null;
     const originPath = `${dir}/origin.geojson`;
     const destinPath = inputs.destin ? `${dir}/destin.geojson` : null;
@@ -172,6 +173,7 @@ export class MovecostEngine implements AnalysisBackend {
 
     this.emit("running", "Writing inputs into the R filesystem…", null);
     if (dtmPath) await webR.FS.writeFile(dtmPath, inputs.dtm!);
+    if (terrainPath) await webR.FS.writeFile(terrainPath, inputs.terrain!);
     if (studyplotPath) {
       await webR.FS.writeFile(studyplotPath, encoder.encode(inputs.studyplot!));
     }
@@ -187,6 +189,7 @@ export class MovecostEngine implements AnalysisBackend {
       originPath,
       destinPath,
       barrierPath,
+      terrainPath,
     };
     await webR.FS.writeFile(requestPath, encoder.encode(JSON.stringify(fullRequest)));
 

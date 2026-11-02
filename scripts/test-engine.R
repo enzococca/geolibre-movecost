@@ -142,6 +142,10 @@ cases <- list(
     expect = c("rankedPaths")
   ),
   list(
+    label = "terrain factors (movecost 3.1)",
+    terrain = TRUE
+  ),
+  list(
     label = "preview: DTM summary for the map",
     preview = TRUE
   ),
@@ -206,6 +210,82 @@ for (case in cases) {
       else resp2$error
     ))
     if (!ok2) failures <- failures + 1
+    next
+  }
+
+  if (isTRUE(case$terrain)) {
+    # movecost 3.1: the terrain-factor raster modulates the surface. Three
+    # things must hold: a run with terrain rebuilds the graph instead of
+    # reusing the baseline's, its costs differ from the baseline's, and an
+    # impassable class (N = "Inf" through the table) forces the path around.
+    run_paths <- function(name, extra_req = list(), extra_params = list()) {
+      req <- list(analysis = "paths", dtmPath = dtm_path,
+                  originPath = origin_path, destinPath = destin1_path,
+                  params = c(list(funct = "t", time = "h", move = 8), extra_params))
+      req <- c(req, extra_req)
+      p <- file.path(outdir, paste0("req-terrain-", name, ".json"))
+      write_json(req, p, auto_unbox = TRUE)
+      fromJSON(mcx_run(p), simplifyVector = FALSE)
+    }
+
+    t0 <- Sys.time()
+    base <- run_paths("base")
+
+    # A numeric raster: the factor itself per cell, here 2 everywhere.
+    tr_num <- r
+    values(tr_num) <- 2
+    tr_num_path <- file.path(outdir, "terrain-num.tif")
+    writeRaster(tr_num, tr_num_path, overwrite = TRUE)
+    num <- run_paths("num", extra_req = list(terrainPath = tr_num_path))
+
+    rebuilt <- !any(grepl("Reusing the cost surface", unlist(num$log)))
+    changed <- !identical(base$result$rasters$accumulated$data,
+                          num$result$rasters$accumulated$data)
+    ok_num <- isTRUE(base$ok) && isTRUE(num$ok) && rebuilt && changed
+    secs <- round(as.numeric(difftime(Sys.time(), t0, units = "secs")), 1)
+    cat(sprintf("[%s] %-38s %ss  %s\n", if (ok_num) "PASS" else "FAIL",
+                "terrain: numeric raster changes the surface", secs,
+                if (!isTRUE(num$ok)) num$error
+                else paste0(if (rebuilt) "graph rebuilt" else "GRAPH WRONGLY REUSED",
+                            ", costs ", if (changed) "changed" else "UNCHANGED")))
+    if (!ok_num) failures <- failures + 1
+
+    # A categorical raster: class 2 is a wall across the direct line, made
+    # impassable by the table (N = "Inf" — the string, as JSON delivers it);
+    # the gap south of y = 4501500 is the only way through.
+    wall <- xy[, 1] >= 402000 & xy[, 1] <= 402400 & xy[, 2] >= 4501500
+    tr_cat <- r
+    values(tr_cat) <- ifelse(wall, 2, 1)
+    tr_cat_path <- file.path(outdir, "terrain-cat.tif")
+    writeRaster(tr_cat, tr_cat_path, overwrite = TRUE)
+    t0 <- Sys.time()
+    cat_resp <- run_paths(
+      "cat",
+      extra_req = list(terrainPath = tr_cat_path),
+      extra_params = list(terrainTable = list(
+        list(class = 1, N = 1), list(class = 2, N = "Inf")
+      ))
+    )
+    detour <- FALSE
+    if (isTRUE(cat_resp$ok) && !is.null(cat_resp$result$vectors$lcps)) {
+      lcp_file <- file.path(outdir, "terrain-lcp.geojson")
+      writeLines(cat_resp$result$vectors$lcps, lcp_file, useBytes = TRUE)
+      lcp <- st_transform(st_read(lcp_file, quiet = TRUE), 32633)
+      strip <- st_as_sfc(st_bbox(c(xmin = 402000, xmax = 402400,
+                                   ymin = 4500000, ymax = 4506000),
+                                 crs = st_crs(32633)))
+      crossing <- suppressWarnings(st_crop(lcp, strip))
+      # Every crossing of the strip must happen in the gap, below the wall.
+      detour <- nrow(crossing) > 0 &&
+        as.numeric(st_bbox(crossing)["ymax"]) < 4501500
+    }
+    secs <- round(as.numeric(difftime(Sys.time(), t0, units = "secs")), 1)
+    cat(sprintf("[%s] %-38s %ss  %s\n", if (detour) "PASS" else "FAIL",
+                "terrain: Inf class forces the detour", secs,
+                if (!isTRUE(cat_resp$ok)) cat_resp$error
+                else if (detour) "the path crosses only through the gap"
+                else "the path crossed the impassable wall"))
+    if (!detour) failures <- failures + 1
     next
   }
 

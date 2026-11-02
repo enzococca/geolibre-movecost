@@ -196,6 +196,13 @@ export class HttpBackend implements AnalysisBackend {
       form.append("dtm", new Blob([inputs.dtm as BlobPart], { type: "image/tiff" }), "dtm.tif");
     }
     if (inputs.studyplot) form.append("studyplot", inputs.studyplot);
+    if (inputs.terrain) {
+      form.append(
+        "terrain",
+        new Blob([inputs.terrain as BlobPart], { type: "image/tiff" }),
+        "terrain.tif",
+      );
+    }
     form.append("origin", inputs.origin);
     if (inputs.destin) form.append("destin", inputs.destin);
     if (inputs.barrier) form.append("barrier", inputs.barrier);

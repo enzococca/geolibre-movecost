@@ -2,14 +2,38 @@
 
 Project lives at `~/geolibre-movecost` on the Mac (mac-home) and on GitHub at
 **https://github.com/enzococca/geolibre-movecost** (main + orphan `gh-pages`).
-Version 0.2.2. GeoLibre is 2.9.0 on both the Mac and the iPad.
+Version 0.3.0. GeoLibre is 2.9.0 on both the Mac and the iPad.
 
 **Published manifest (permanent):**
 `https://enzococca.github.io/geolibre-movecost/plugin.json`
 — serves plugin.json, dist/, and `wasm-repo/` (the rebuilt terra and
-movecost 3.0.0 for WebAssembly) with CORS.
+movecost 3.1.1 for WebAssembly) with CORS.
 Republish with `bash scripts/publish-pages.sh && git push origin gh-pages`;
 if the Pages build does not pick it up, `gh api -X POST repos/enzococca/geolibre-movecost/pages/builds`.
+
+## movecost 3.1.1 + terrain factors — DONE (2026-11-02, 0.3.0)
+
+movecost 3.1.0 added a terrain-factor raster to `mc_surface()` and 3.1.1
+corrected the sign of the slope in several cost functions (downhill no longer
+costs like uphill) — results, not interface — so the engine now requires
+3.1.1 and names an older installation instead of answering with wrong numbers.
+
+What landed: `terrainPath` in the request and an optional `terrain` part in
+both runtimes (plumber multipart, webR FS); `params.terrainTable` for a
+categorical raster (rows of class/N, with N the string `"Inf"` for an
+impassable class — JSON cannot carry Infinity, `as.numeric("Inf")` reads it
+back); the surface cache keys the terrain by file md5 plus the table, so
+moving only the points still reuses the graph; the panel grew a "Terrain
+factors (optional, GeoTIFF)" upload with a class=N table field in section 1.
+`build-movecost-wasm.R` now stamps `Built:` with the R minor the repository
+path names (`contrib/4.6`), not the builder's R, so the archive can be
+produced from any native R (done here with 4.4.1).
+
+Verified: `test-engine.R` 15/15 — two new terrain checks: a numeric raster
+rebuilds the surface and changes the costs, an Inf class wall forces the LCP
+through the only gap — plus typecheck, build, and the webR install under
+Node: movecost 3.1.1 from the rebuilt `wasm-repo`, paths and boundary green,
+surface cache reused.
 
 ## Where it stands (2026-09-10, 0.2.1)
 

@@ -9,7 +9,7 @@ machine (`r-backend/`, **the fast path** for real work), or R itself compiled to
 WebAssembly inside the page, which needs nothing installed and also runs on the
 iPad and Android builds — roughly a hundred times slower, and bounded by the
 browser's memory. The in-browser path needs a rebuilt `terra` (the binary
-published for webR does not load) and a WebAssembly build of movecost 3.0
+published for webR does not load) and a WebAssembly build of movecost 3.1.1
 (repo.r-wasm.org still carries 2.2); the plugin fetches both from its own site
 automatically, and `scripts/build-terra-wasm.sh` and
 `scripts/build-movecost-wasm.R` rebuild them. The panel probes
@@ -48,8 +48,11 @@ GeoLibre build by `scripts/capture-guide.mjs`.
 Once:
 
 ```r
-# movecost 3.0.0 or later: the plugin speaks the compute-once `mc_*` API, and
-# the 2.x entry points are defunct stubs there.
+# movecost 3.1.1 or later: the plugin speaks the compute-once `mc_*` API (the
+# 2.x entry points are defunct stubs), passes the 3.1 terrain-factor raster
+# through, and 3.1.1 corrected the sign of the slope in several cost functions
+# — downhill no longer costs like uphill — so older versions answer with the
+# wrong numbers, not just fewer features.
 install.packages(c("plumber", "movecost", "sf", "terra", "jsonlite"))
 install.packages(c("elevatr", "progress"))   # for "draw an area and download a DEM"
 ```

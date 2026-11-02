@@ -160,6 +160,10 @@ export class MovecostPanel {
   private disposeProgress: (() => void) | null = null;
 
   private dtm: DtmFile | null = null;
+  /** movecost 3.1: optional raster of terrain factors, loaded from disk. */
+  private terrainFactor: { name: string; bytes: Uint8Array } | null = null;
+  /** The class=N table typed for a categorical terrain raster. */
+  private terrainTableText = "";
   private analysis: AnalysisId = "paths";
   private params: AnalysisParams = { ...DEFAULT_PARAMS };
   private extras: Record<string, unknown> = {};
@@ -555,7 +559,129 @@ export class MovecostPanel {
       ),
     );
 
+    children.push(...this.renderTerrainFactor());
+
     return el("section", { class: "mcx-section" }, ...children);
+  }
+
+  /**
+   * movecost 3.1: an optional raster of terrain factors. Numeric cells carry
+   * the factor N itself; a categorical raster of class codes travels with the
+   * class=N table typed below it. The scalar N among the cost settings becomes
+   * the fallback for cells without a value.
+   */
+  private renderTerrainFactor(): HTMLElement[] {
+    const input = el("input", {
+      class: "mcx-file",
+      type: "file",
+      accept: ".tif,.tiff,.TIF,.TIFF",
+    });
+    input.addEventListener("change", () => {
+      const file = input.files?.[0];
+      if (file) void this.loadTerrainFactor(file);
+    });
+
+    const children: HTMLElement[] = [
+      field("Terrain factors (optional, GeoTIFF)", input, {
+        hint:
+          "Terrain factor N per cell — numeric, or categorical with the table below. " +
+          "Inf makes a cell impassable; the N among the cost settings fills cells " +
+          "without a value. Functions that take no terrain factor warn and run without it.",
+      }),
+    ];
+    if (this.terrainFactor) {
+      children.push(
+        el(
+          "div",
+          { class: "mcx-actions" },
+          el("span", {
+            class: "mcx-file-summary",
+            text: `${this.terrainFactor.name} — ${formatBytes(this.terrainFactor.bytes.byteLength)}`,
+          }),
+          button(
+            "Remove",
+            () => {
+              this.terrainFactor = null;
+              this.terrainTableText = "";
+              this.render();
+            },
+            "ghost",
+          ),
+        ),
+        field(
+          "Class table (for a categorical raster)",
+          textInput(
+            this.terrainTableText,
+            (value) => {
+              this.terrainTableText = value;
+            },
+            "e.g. 1=1, 2=0.8, 3=Inf",
+          ),
+          {
+            hint:
+              "class=N pairs, comma separated. Leave empty when the raster already holds the factors.",
+          },
+        ),
+      );
+    }
+    return children;
+  }
+
+  private async loadTerrainFactor(file: File): Promise<void> {
+    // The same generous ceiling the DTM has: refuse the absurd file before it
+    // is read, and let the cell budget be the real limit.
+    const budget = this.cellBudget();
+    const ceiling = budget.cells * 200;
+    if (file.size > ceiling) {
+      this.message = {
+        text:
+          `${file.name} is ${formatBytes(file.size)}, more than ${formatBytes(ceiling)}, ` +
+          `which is as much as ${budget.where} can take. Clip or coarsen it and load it again.`,
+        tone: "error",
+      };
+      this.render();
+      return;
+    }
+    try {
+      const buffer = await file.arrayBuffer();
+      this.terrainFactor = { name: file.name, bytes: new Uint8Array(buffer) };
+      this.message = null;
+      this.render();
+    } catch (error) {
+      this.message = {
+        text: `Could not read the terrain raster: ${describeError(error)}`,
+        tone: "error",
+      };
+      this.render();
+    }
+  }
+
+  /**
+   * "1=1, 2=0.8, 3=Inf" → rows for `AnalysisParams.terrainTable`, or null when
+   * the text does not parse. Inf travels as the string "Inf": JSON cannot
+   * carry Infinity, and R's as.numeric("Inf") reads it back exactly.
+   */
+  private parseTerrainTable(text: string): { class: number; N: number | string }[] | null {
+    const entries = text
+      .split(/[,;\n]+/)
+      .map((part) => part.trim())
+      .filter(Boolean);
+    if (!entries.length) return null;
+    const rows: { class: number; N: number | string }[] = [];
+    for (const entry of entries) {
+      const match = entry.match(/^(-?\d+(?:\.\d+)?)\s*[=:]\s*(.+)$/);
+      if (!match) return null;
+      const klass = Number(match[1]);
+      const raw = match[2].trim();
+      if (/^inf(inity)?$/i.test(raw)) {
+        rows.push({ class: klass, N: "Inf" });
+        continue;
+      }
+      const n = Number(raw);
+      if (!Number.isFinite(n) || n < 0) return null;
+      rows.push({ class: klass, N: n });
+    }
+    return rows;
   }
 
   /** Draw-an-area flow: pick a polygon, choose a zoom, fetch the elevation. */
@@ -1733,6 +1859,10 @@ export class MovecostPanel {
     if (!isTimeFunction(params.funct)) delete params.time;
     // Only meaningful when movecost resolves the terrain itself.
     if (!this.dtm && this.useArea) params.zoom = this.demZoom;
+    if (this.terrainFactor && this.terrainTableText.trim()) {
+      const rows = this.parseTerrainTable(this.terrainTableText);
+      if (rows?.length) params.terrainTable = rows;
+    }
     return params;
   }
 
@@ -1760,6 +1890,16 @@ export class MovecostPanel {
     }
     if (this.analysis === "boundary" && !(params.contValue?.length)) {
       return "Enter at least one cost limit for the boundary analysis.";
+    }
+    if (
+      this.terrainFactor &&
+      this.terrainTableText.trim() &&
+      this.parseTerrainTable(this.terrainTableText) === null
+    ) {
+      return (
+        "Could not read the terrain class table: use class=N pairs separated " +
+        "by commas, e.g. 1=1, 2=0.8, 3=Inf."
+      );
     }
     return null;
   }
@@ -1795,6 +1935,7 @@ export class MovecostPanel {
           barrier: this.barrier.features.length
             ? JSON.stringify(toFeatureCollection(this.barrier.features))
             : null,
+          terrain: this.terrainFactor?.bytes ?? null,
         },
       );
 

@@ -95,13 +95,15 @@ mcx_require <- function() {
   }
   # movecost 3.0.0 (CRAN, June 2026) replaced the per-analysis functions with a
   # compute-once API: mc_surface() builds the cost graph and mc_paths() and its
-  # siblings reuse it. This engine speaks that API, and 2.x has no equivalent,
-  # so an old installation is named here rather than left to fail somewhere
-  # inside a function that does not exist.
+  # siblings reuse it. 3.1.0 added the terrain-factor raster this engine passes
+  # through, and 3.1.1 corrected the sign of the slope in several cost
+  # functions (downhill no longer costs like uphill) — results, not interface —
+  # so the floor is the corrections release, named here rather than left to
+  # fail or, worse, answer with the wrong numbers.
   version <- utils::packageVersion("movecost")
-  if (version < "3.0.0") {
+  if (version < "3.1.1") {
     mcx_stop(
-      "This plugin needs movecost 3.0.0 or later; the installed version is ",
+      "This plugin needs movecost 3.1.1 or later; the installed version is ",
       as.character(version), '. Update it with: install.packages("movecost")'
     )
   }
@@ -164,6 +166,40 @@ mcx_prepare_dtm <- function(path, reproject = TRUE) {
   }
   names(r) <- "dtm"
   r
+}
+
+#' The optional terrain-factor raster (movecost 3.1): numeric cells carry the
+#' factor N itself, a categorical raster travels with params$terrainTable.
+#' movecost aligns a raster on a different grid or CRS to the DTM by itself
+#' (nearest neighbour, with a warning), so nothing is resampled here.
+mcx_read_terrain <- function(path) {
+  if (is.null(path) || is.na(path) || !nzchar(path)) {
+    return(NULL)
+  }
+  if (!file.exists(path)) mcx_stop("Terrain raster not found: ", path)
+  r <- terra::rast(path)
+  if (terra::nlyr(r) > 1) r <- r[[1]]
+  names(r) <- "terrain"
+  r
+}
+
+#' The class -> N table for a categorical terrain raster, as a data frame
+#' movecost accepts. Arrives as rows in params$terrainTable; N may be the
+#' string "Inf" (JSON has no Infinity), which as.numeric() reads correctly.
+mcx_terrain_table <- function(params) {
+  tb <- params$terrainTable
+  if (is.null(tb)) {
+    return(NULL)
+  }
+  tb <- as.data.frame(tb)
+  if (!nrow(tb)) {
+    return(NULL)
+  }
+  names(tb) <- tolower(names(tb))
+  if (!all(c("class", "n") %in% names(tb))) {
+    mcx_stop("The terrain table needs 'class' and 'N' columns.")
+  }
+  data.frame(class = as.numeric(tb$class), N = as.numeric(tb$n))
 }
 
 #' The DTM a request refers to: a kept in-memory raster by handle, or a file.
@@ -436,9 +472,9 @@ mcx_call <- function(fun, args) {
 # Exactly one surface is kept. Inside webR the graph is the largest object in
 # the heap, so the previous one is dropped and collected before a new one is
 # built, never held alongside it.
-mcx_surface_signature <- function(source_key, barrier_key, args) {
+mcx_surface_signature <- function(source_key, barrier_key, terrain_key, args) {
   paste(
-    c(source_key, barrier_key,
+    c(source_key, barrier_key, terrain_key,
       vapply(args, function(v) paste(as.character(v), collapse = ","), character(1))),
     collapse = "|"
   )
@@ -450,9 +486,10 @@ mcx_forget_surface <- function() {
   invisible(NULL)
 }
 
-mcx_build_surface <- function(source, barrier, barrier_key, params) {
+mcx_build_surface <- function(source, barrier, barrier_key, params,
+                              terrain = NULL, terrain_key = "") {
   args <- mcx_surface_args(params)
-  signature <- mcx_surface_signature(source$key, barrier_key, args)
+  signature <- mcx_surface_signature(source$key, barrier_key, terrain_key, args)
   if (!is.null(mcx_env$surface) && identical(mcx_env$surface_key, signature)) {
     mcx_log("Reusing the cost surface already built for these settings")
     return(mcx_env$surface)
@@ -466,6 +503,12 @@ mcx_build_surface <- function(source, barrier, barrier_key, params) {
     call_args$z <- source$zoom
   }
   if (!is.null(barrier)) call_args$barrier <- barrier
+  # movecost 3.1: the raster of per-cell terrain factors, with the scalar N as
+  # the fallback for cells without a value; the class table only with it.
+  if (!is.null(terrain$raster)) {
+    call_args$terrain <- terrain$raster
+    if (!is.null(terrain$table)) call_args$terrain.table <- terrain$table
+  }
 
   mcx_log("Building the cost surface (", args$funct, ", ", args$move, " directions)")
   surface <- mcx_call(movecost::mc_surface, call_args)
@@ -1007,6 +1050,12 @@ mcx_run <- function(request_path, response_path = NULL) {
       barrier_sf <- mcx_prepare_barrier(
         mcx_read_vector(req$barrierPath, target_crs, "Barrier"), cell_size)
 
+      terrain_r <- mcx_read_terrain(req$terrainPath)
+      terrain_tb <- mcx_terrain_table(params)
+      if (!is.null(terrain_tb) && is.null(terrain_r)) {
+        mcx_stop("A terrain table was supplied without a terrain-factor raster.")
+      }
+
       if (is.null(origin_sf)) mcx_stop("Every analysis needs at least one origin point.")
 
       # Written to the log on every run: when something fails on a user's own
@@ -1026,6 +1075,10 @@ mcx_run <- function(request_path, response_path = NULL) {
                  " at ", round(as.numeric(terra::res(source$dtm))[1], 1), " m")
         } else {
           paste0("study area, zoom ", source$zoom)
+        },
+        if (!is.null(terrain_r)) {
+          paste0("terrain factors ", terra::ncol(terrain_r), "x", terra::nrow(terrain_r),
+                 if (!is.null(terrain_tb)) paste0(" with ", nrow(terrain_tb), " classes"))
         },
         describe(origin_sf, "origin"), describe(destin_sf, "destin"),
         describe(barrier_sf, "barrier")
@@ -1048,7 +1101,25 @@ mcx_run <- function(request_path, response_path = NULL) {
       # movecost 2.x could not.
       barrier_key <- paste0("barrier:", mcx_pick(req, "barrierPath", ""),
                             ":", as.numeric(mcx_pick(params, "field", 0)))
-      surface <- mcx_build_surface(source, barrier_sf, barrier_key, params)
+      # Keyed by content, not path: the webR runtime writes the terrain into a
+      # fresh per-run directory, and a path-based key would rebuild the surface
+      # on every run even when only the points moved (the one case the cache
+      # exists for). The table rides along so editing only it changes the key.
+      terrain_key <- paste0(
+        "terrain:",
+        if (is.null(terrain_r)) "" else {
+          unname(tools::md5sum(mcx_pick(req, "terrainPath", "")))
+        },
+        ":",
+        if (is.null(terrain_tb)) "" else {
+          paste(terrain_tb$class, terrain_tb$N, sep = "=", collapse = ",")
+        }
+      )
+      surface <- mcx_build_surface(
+        source, barrier_sf, barrier_key, params,
+        terrain = list(raster = terrain_r, table = terrain_tb),
+        terrain_key = terrain_key
+      )
 
       result <- switch(analysis,
         paths = mcx_analysis_paths(surface, origin_sf, destin_sf, params),

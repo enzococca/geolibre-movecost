@@ -35,7 +35,7 @@ export const UPSTREAM_WASM_REPO = "https://repo.r-wasm.org";
 
 /**
  * The repository published with the plugin's own site, carrying the rebuilt
- * terra and the WebAssembly build of movecost 3.0 (docs/TERRA-WASM.md). The panel also discovers a `wasm-repo/` next to
+ * terra and the WebAssembly build of movecost 3.1.1 (docs/TERRA-WASM.md). The panel also discovers a `wasm-repo/` next to
  * whichever manifest the plugin was installed from, but a copy installed from
  * the GeoLibre plugin registry is served from plugins.geolibre.app with no
  * repository beside it, so this one is always consulted before upstream.

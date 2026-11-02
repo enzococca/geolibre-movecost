@@ -219,6 +219,7 @@ function(req, res) {
 #*
 #* Expects a multipart body with:
 #*   dtm      — the GeoTIFF (required)
+#*   terrain  — GeoTIFF of terrain factors (optional, movecost 3.1)
 #*   origin   — GeoJSON text (required)
 #*   destin   — GeoJSON text (optional)
 #*   barrier  — GeoJSON text (optional)
@@ -252,6 +253,13 @@ function(req, res) {
   if (!is.null(raw_dtm)) {
     dtm_path <- file.path(work, "dtm.tif")
     writeBin(if (is.raw(raw_dtm)) raw_dtm else as.raw(raw_dtm), dtm_path)
+  }
+
+  raw_terrain <- part("terrain")
+  terrain_path <- NULL
+  if (!is.null(raw_terrain)) {
+    terrain_path <- file.path(work, "terrain.tif")
+    writeBin(if (is.raw(raw_terrain)) raw_terrain else as.raw(raw_terrain), terrain_path)
   }
 
   write_text_part <- function(name, filename) {
@@ -288,6 +296,7 @@ function(req, res) {
     originPath = origin_path,
     destinPath = write_text_part("destin", "destin.geojson"),
     barrierPath = write_text_part("barrier", "barrier.geojson"),
+    terrainPath = terrain_path,
     params = if (is.null(spec$params)) list() else spec$params
   )
 

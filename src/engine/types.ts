@@ -25,8 +25,15 @@ export interface AnalysisParams {
   W?: number;
   /** Carried load in kg (Pandolf, Van Leusen). */
   L?: number;
-  /** Terrain coefficient / ease of movement. */
+  /** Terrain coefficient / ease of movement. With a terrain-factor raster
+   * loaded this becomes the fallback for cells without a value. */
   N?: number;
+  /**
+   * movecost 3.1: translates the classes of a categorical terrain-factor
+   * raster into factors. N is a string for "Inf" (impassable), because JSON
+   * cannot carry Infinity; R's as.numeric("Inf") reads it back correctly.
+   */
+  terrainTable?: { class: number; N: number | string }[];
   /** Speed in m/s (Pandolf, Van Leusen, Ardigo). */
   V?: number;
   autoReproject?: boolean;
@@ -61,6 +68,8 @@ export interface EngineRequest {
   originPath: string;
   destinPath?: string | null;
   barrierPath?: string | null;
+  /** movecost 3.1: optional terrain-factor raster (numeric or categorical). */
+  terrainPath?: string | null;
   params: AnalysisParams;
 }
 
@@ -123,6 +132,12 @@ export interface EngineInputs {
   origin: string;
   destin?: string | null;
   barrier?: string | null;
+  /**
+   * Raw GeoTIFF bytes of the optional terrain-factor raster (movecost 3.1):
+   * numeric cells are the factor N itself, a categorical raster travels with
+   * `params.terrainTable`.
+   */
+  terrain?: Uint8Array | null;
 }
 
 /** What `POST /preview` returns for a loaded DTM. */

@@ -63,9 +63,16 @@ The request names files already written into webR's emulated filesystem:
   "originPath": "/movecost/run-1/origin.geojson",
   "destinPath": "/movecost/run-1/destin.geojson",   // or null
   "barrierPath": null,
+  "terrainPath": null,              // optional terrain-factor raster (movecost 3.1)
   "params": { "funct": "t", "time": "h", "move": 16 }
 }
 ```
+
+A categorical terrain raster travels with `params.terrainTable`, rows of
+`{ "class": 2, "N": 0.8 }`; `N` may be the string `"Inf"` for an impassable
+class, because JSON cannot carry Infinity and R's `as.numeric("Inf")` reads it
+back exactly. The scalar `params.N` is the fallback for cells without a
+terrain value.
 
 The response inlines the results:
 
@@ -291,7 +298,7 @@ Three consequences follow through the rest of the plugin:
 
 ## movecost for WebAssembly
 
-`repo.r-wasm.org` still builds movecost 2.2, so the plugin ships 3.0.0 in its
+`repo.r-wasm.org` still builds movecost 2.2, so the plugin ships 3.1.1 in its
 own `build/wasm-repo`, consulted before upstream (`src/config.ts`).
 
 It does not need the rwasm container that terra needs.

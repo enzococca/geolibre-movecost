@@ -3,7 +3,7 @@
 #
 #   Rscript scripts/build-movecost-wasm.R [version]
 #
-# movecost 3.0.0 is `NeedsCompilation: no`: it is R code and data, no shared
+# movecost (3.1.1 and the whole 3.x line) is `NeedsCompilation: no`: it is R code and data, no shared
 # object. The archive webR installs is simply the installed package directory,
 # and R's lazy-load databases are portable across platforms and word sizes, so
 # a package with no compiled code installed by any R 4.6 works unchanged inside
@@ -16,7 +16,7 @@
 # =============================================================================
 
 args <- commandArgs(trailingOnly = TRUE)
-version <- if (length(args)) args[1] else "3.0.0"
+version <- if (length(args)) args[1] else "3.1.1"
 repo_dir <- "build/wasm-repo/bin/emscripten/contrib/4.6"
 stopifnot(dir.exists(dirname(dirname(dirname(dirname(repo_dir))))))
 dir.create(repo_dir, recursive = TRUE, showWarnings = FALSE)
@@ -47,15 +47,21 @@ if (dir.exists(file.path(lib, "movecost", "libs"))) {
 }
 
 cat("== restamping the build metadata as emscripten\n")
+# The repository path names webR's R minor (contrib/4.6): stamp THAT version,
+# not whichever R happened to run this script — install.packages inside webR
+# rejects a binary whose Built: names a different minor, and nothing in a
+# NeedsCompilation:no package actually depends on the builder's R.
+target_r <- paste0(basename(repo_dir), ".0")
 desc_path <- file.path(lib, "movecost", "DESCRIPTION")
 desc <- readLines(desc_path)
 stamp <- format(Sys.time(), "%Y-%m-%d %H:%M:%S UTC", tz = "UTC")
-built <- paste0("Built: R ", getRversion(), "; wasm32-unknown-emscripten; ", stamp, "; unix")
+built <- paste0("Built: R ", target_r, "; wasm32-unknown-emscripten; ", stamp, "; unix")
 desc <- c(desc[!grepl("^Built:", desc)], built)
 writeLines(desc, desc_path)
 
 meta_path <- file.path(lib, "movecost", "Meta", "package.rds")
 meta <- readRDS(meta_path)
+meta$Built$R <- R_system_version(target_r)
 meta$Built$Platform <- "wasm32-unknown-emscripten"
 meta$Built$OStype <- "unix"
 saveRDS(meta, meta_path, version = 2)
