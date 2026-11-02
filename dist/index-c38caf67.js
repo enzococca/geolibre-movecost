@@ -2484,13 +2484,15 @@ mcx_require <- function() {
   }
   # movecost 3.0.0 (CRAN, June 2026) replaced the per-analysis functions with a
   # compute-once API: mc_surface() builds the cost graph and mc_paths() and its
-  # siblings reuse it. This engine speaks that API, and 2.x has no equivalent,
-  # so an old installation is named here rather than left to fail somewhere
-  # inside a function that does not exist.
+  # siblings reuse it. 3.1.0 added the terrain-factor raster this engine passes
+  # through, and 3.1.1 corrected the sign of the slope in several cost
+  # functions (downhill no longer costs like uphill) — results, not interface —
+  # so the floor is the corrections release, named here rather than left to
+  # fail or, worse, answer with the wrong numbers.
   version <- utils::packageVersion("movecost")
-  if (version < "3.0.0") {
+  if (version < "3.1.1") {
     mcx_stop(
-      "This plugin needs movecost 3.0.0 or later; the installed version is ",
+      "This plugin needs movecost 3.1.1 or later; the installed version is ",
       as.character(version), '. Update it with: install.packages("movecost")'
     )
   }
@@ -2553,6 +2555,40 @@ mcx_prepare_dtm <- function(path, reproject = TRUE) {
   }
   names(r) <- "dtm"
   r
+}
+
+#' The optional terrain-factor raster (movecost 3.1): numeric cells carry the
+#' factor N itself, a categorical raster travels with params$terrainTable.
+#' movecost aligns a raster on a different grid or CRS to the DTM by itself
+#' (nearest neighbour, with a warning), so nothing is resampled here.
+mcx_read_terrain <- function(path) {
+  if (is.null(path) || is.na(path) || !nzchar(path)) {
+    return(NULL)
+  }
+  if (!file.exists(path)) mcx_stop("Terrain raster not found: ", path)
+  r <- terra::rast(path)
+  if (terra::nlyr(r) > 1) r <- r[[1]]
+  names(r) <- "terrain"
+  r
+}
+
+#' The class -> N table for a categorical terrain raster, as a data frame
+#' movecost accepts. Arrives as rows in params$terrainTable; N may be the
+#' string "Inf" (JSON has no Infinity), which as.numeric() reads correctly.
+mcx_terrain_table <- function(params) {
+  tb <- params$terrainTable
+  if (is.null(tb)) {
+    return(NULL)
+  }
+  tb <- as.data.frame(tb)
+  if (!nrow(tb)) {
+    return(NULL)
+  }
+  names(tb) <- tolower(names(tb))
+  if (!all(c("class", "n") %in% names(tb))) {
+    mcx_stop("The terrain table needs 'class' and 'N' columns.")
+  }
+  data.frame(class = as.numeric(tb$class), N = as.numeric(tb$n))
 }
 
 #' The DTM a request refers to: a kept in-memory raster by handle, or a file.
@@ -2825,9 +2861,9 @@ mcx_call <- function(fun, args) {
 # Exactly one surface is kept. Inside webR the graph is the largest object in
 # the heap, so the previous one is dropped and collected before a new one is
 # built, never held alongside it.
-mcx_surface_signature <- function(source_key, barrier_key, args) {
+mcx_surface_signature <- function(source_key, barrier_key, terrain_key, args) {
   paste(
-    c(source_key, barrier_key,
+    c(source_key, barrier_key, terrain_key,
       vapply(args, function(v) paste(as.character(v), collapse = ","), character(1))),
     collapse = "|"
   )
@@ -2839,9 +2875,10 @@ mcx_forget_surface <- function() {
   invisible(NULL)
 }
 
-mcx_build_surface <- function(source, barrier, barrier_key, params) {
+mcx_build_surface <- function(source, barrier, barrier_key, params,
+                              terrain = NULL, terrain_key = "") {
   args <- mcx_surface_args(params)
-  signature <- mcx_surface_signature(source$key, barrier_key, args)
+  signature <- mcx_surface_signature(source$key, barrier_key, terrain_key, args)
   if (!is.null(mcx_env$surface) && identical(mcx_env$surface_key, signature)) {
     mcx_log("Reusing the cost surface already built for these settings")
     return(mcx_env$surface)
@@ -2855,6 +2892,12 @@ mcx_build_surface <- function(source, barrier, barrier_key, params) {
     call_args$z <- source$zoom
   }
   if (!is.null(barrier)) call_args$barrier <- barrier
+  # movecost 3.1: the raster of per-cell terrain factors, with the scalar N as
+  # the fallback for cells without a value; the class table only with it.
+  if (!is.null(terrain$raster)) {
+    call_args$terrain <- terrain$raster
+    if (!is.null(terrain$table)) call_args$terrain.table <- terrain$table
+  }
 
   mcx_log("Building the cost surface (", args$funct, ", ", args$move, " directions)")
   surface <- mcx_call(movecost::mc_surface, call_args)
@@ -3396,6 +3439,12 @@ mcx_run <- function(request_path, response_path = NULL) {
       barrier_sf <- mcx_prepare_barrier(
         mcx_read_vector(req$barrierPath, target_crs, "Barrier"), cell_size)
 
+      terrain_r <- mcx_read_terrain(req$terrainPath)
+      terrain_tb <- mcx_terrain_table(params)
+      if (!is.null(terrain_tb) && is.null(terrain_r)) {
+        mcx_stop("A terrain table was supplied without a terrain-factor raster.")
+      }
+
       if (is.null(origin_sf)) mcx_stop("Every analysis needs at least one origin point.")
 
       # Written to the log on every run: when something fails on a user's own
@@ -3415,6 +3464,10 @@ mcx_run <- function(request_path, response_path = NULL) {
                  " at ", round(as.numeric(terra::res(source$dtm))[1], 1), " m")
         } else {
           paste0("study area, zoom ", source$zoom)
+        },
+        if (!is.null(terrain_r)) {
+          paste0("terrain factors ", terra::ncol(terrain_r), "x", terra::nrow(terrain_r),
+                 if (!is.null(terrain_tb)) paste0(" with ", nrow(terrain_tb), " classes"))
         },
         describe(origin_sf, "origin"), describe(destin_sf, "destin"),
         describe(barrier_sf, "barrier")
@@ -3437,7 +3490,25 @@ mcx_run <- function(request_path, response_path = NULL) {
       # movecost 2.x could not.
       barrier_key <- paste0("barrier:", mcx_pick(req, "barrierPath", ""),
                             ":", as.numeric(mcx_pick(params, "field", 0)))
-      surface <- mcx_build_surface(source, barrier_sf, barrier_key, params)
+      # Keyed by content, not path: the webR runtime writes the terrain into a
+      # fresh per-run directory, and a path-based key would rebuild the surface
+      # on every run even when only the points moved (the one case the cache
+      # exists for). The table rides along so editing only it changes the key.
+      terrain_key <- paste0(
+        "terrain:",
+        if (is.null(terrain_r)) "" else {
+          unname(tools::md5sum(mcx_pick(req, "terrainPath", "")))
+        },
+        ":",
+        if (is.null(terrain_tb)) "" else {
+          paste(terrain_tb$class, terrain_tb$N, sep = "=", collapse = ",")
+        }
+      )
+      surface <- mcx_build_surface(
+        source, barrier_sf, barrier_key, params,
+        terrain = list(raster = terrain_r, table = terrain_tb),
+        terrain_key = terrain_key
+      )
 
       result <- switch(analysis,
         paths = mcx_analysis_paths(surface, origin_sf, destin_sf, params),
@@ -3611,6 +3682,13 @@ class HttpBackend {
       form.append("dtm", new Blob([inputs.dtm], { type: "image/tiff" }), "dtm.tif");
     }
     if (inputs.studyplot) form.append("studyplot", inputs.studyplot);
+    if (inputs.terrain) {
+      form.append(
+        "terrain",
+        new Blob([inputs.terrain], { type: "image/tiff" }),
+        "terrain.tif"
+      );
+    }
     form.append("origin", inputs.origin);
     if (inputs.destin) form.append("destin", inputs.destin);
     if (inputs.barrier) form.append("barrier", inputs.barrier);
@@ -3830,6 +3908,7 @@ class MovecostEngine {
     await ensureDir(webR, dir);
     const encoder = new TextEncoder();
     const dtmPath = inputs.dtm && !inputs.dtmHandle ? `${dir}/dtm.tif` : null;
+    const terrainPath = inputs.terrain ? `${dir}/terrain.tif` : null;
     const studyplotPath = inputs.studyplot ? `${dir}/studyplot.geojson` : null;
     const originPath = `${dir}/origin.geojson`;
     const destinPath = inputs.destin ? `${dir}/destin.geojson` : null;
@@ -3838,6 +3917,7 @@ class MovecostEngine {
     const responsePath = `${dir}/request.response.json`;
     this.emit("running", "Writing inputs into the R filesystem…", null);
     if (dtmPath) await webR.FS.writeFile(dtmPath, inputs.dtm);
+    if (terrainPath) await webR.FS.writeFile(terrainPath, inputs.terrain);
     if (studyplotPath) {
       await webR.FS.writeFile(studyplotPath, encoder.encode(inputs.studyplot));
     }
@@ -3851,7 +3931,8 @@ class MovecostEngine {
       studyplotPath,
       originPath,
       destinPath,
-      barrierPath
+      barrierPath,
+      terrainPath
     };
     await webR.FS.writeFile(requestPath, encoder.encode(JSON.stringify(fullRequest)));
     this.emit(
@@ -4760,7 +4841,7 @@ const KIND_STYLES = {
 function resultStyle(key, kind) {
   return RESULT_STYLES[key] ?? KIND_STYLES[kind] ?? {};
 }
-const PLUGIN_VERSION = "0.2.4";
+const PLUGIN_VERSION = "0.3.0";
 const ANALYSES = [
   {
     id: "paths",
@@ -5020,7 +5101,7 @@ function textInput(value, onChange, placeholder) {
     class: "mcx-input",
     type: "text",
     value,
-    placeholder
+    placeholder: placeholder ?? ""
   });
   node.addEventListener("change", () => onChange(node.value));
   return node;
@@ -5111,6 +5192,10 @@ class MovecostPanel {
   backendNote = null;
   disposeProgress = null;
   dtm = null;
+  /** movecost 3.1: optional raster of terrain factors, loaded from disk. */
+  terrainFactor = null;
+  /** The class=N table typed for a categorical terrain raster. */
+  terrainTableText = "";
   analysis = "paths";
   params = { ...DEFAULT_PARAMS };
   extras = {};
@@ -5436,7 +5521,113 @@ class MovecostPanel {
         }
       )
     );
+    children.push(...this.renderTerrainFactor());
     return el("section", { class: "mcx-section" }, ...children);
+  }
+  /**
+   * movecost 3.1: an optional raster of terrain factors. Numeric cells carry
+   * the factor N itself; a categorical raster of class codes travels with the
+   * class=N table typed below it. The scalar N among the cost settings becomes
+   * the fallback for cells without a value.
+   */
+  renderTerrainFactor() {
+    const input = el("input", {
+      class: "mcx-file",
+      type: "file",
+      accept: ".tif,.tiff,.TIF,.TIFF"
+    });
+    input.addEventListener("change", () => {
+      const file = input.files?.[0];
+      if (file) void this.loadTerrainFactor(file);
+    });
+    const children = [
+      field("Terrain factors (optional, GeoTIFF)", input, {
+        hint: "Terrain factor N per cell — numeric, or categorical with the table below. Inf makes a cell impassable; the N among the cost settings fills cells without a value. Functions that take no terrain factor warn and run without it."
+      })
+    ];
+    if (this.terrainFactor) {
+      children.push(
+        el(
+          "div",
+          { class: "mcx-actions" },
+          el("span", {
+            class: "mcx-file-summary",
+            text: `${this.terrainFactor.name} — ${formatBytes(this.terrainFactor.bytes.byteLength)}`
+          }),
+          button(
+            "Remove",
+            () => {
+              this.terrainFactor = null;
+              this.terrainTableText = "";
+              this.render();
+            },
+            "ghost"
+          )
+        ),
+        field(
+          "Class table (for a categorical raster)",
+          textInput(
+            this.terrainTableText,
+            (value) => {
+              this.terrainTableText = value;
+            },
+            "e.g. 1=1, 2=0.8, 3=Inf"
+          ),
+          {
+            hint: "class=N pairs, comma separated. Leave empty when the raster already holds the factors."
+          }
+        )
+      );
+    }
+    return children;
+  }
+  async loadTerrainFactor(file) {
+    const budget = this.cellBudget();
+    const ceiling = budget.cells * 200;
+    if (file.size > ceiling) {
+      this.message = {
+        text: `${file.name} is ${formatBytes(file.size)}, more than ${formatBytes(ceiling)}, which is as much as ${budget.where} can take. Clip or coarsen it and load it again.`,
+        tone: "error"
+      };
+      this.render();
+      return;
+    }
+    try {
+      const buffer = await file.arrayBuffer();
+      this.terrainFactor = { name: file.name, bytes: new Uint8Array(buffer) };
+      this.message = null;
+      this.render();
+    } catch (error) {
+      this.message = {
+        text: `Could not read the terrain raster: ${describeError(error)}`,
+        tone: "error"
+      };
+      this.render();
+    }
+  }
+  /**
+   * "1=1, 2=0.8, 3=Inf" → rows for `AnalysisParams.terrainTable`, or null when
+   * the text does not parse. Inf travels as the string "Inf": JSON cannot
+   * carry Infinity, and R's as.numeric("Inf") reads it back exactly.
+   */
+  parseTerrainTable(text) {
+    const entries = text.split(/[,;\n]+/).map((part) => part.trim()).filter(Boolean);
+    if (!entries.length) return null;
+    const rows = [];
+    for (const entry of entries) {
+      const match = entry.match(/^(-?\d+(?:\.\d+)?)\s*[=:]\s*(.+)$/);
+      if (!match) return null;
+      const klass = Number(match[1]);
+      const raw = match[2].trim();
+      if (/^inf(inity)?$/i.test(raw)) {
+        rows.push({ class: klass, N: "Inf" });
+        continue;
+      }
+      const n = Number(raw);
+      if (!Number.isFinite(n) || n < 0) return null;
+      rows.push({ class: klass, N: n });
+    }
+    return rows;
   }
   /** Draw-an-area flow: pick a polygon, choose a zoom, fetch the elevation. */
   renderDemDownload() {
@@ -6460,6 +6651,10 @@ class MovecostPanel {
     }
     if (!isTimeFunction(params.funct)) delete params.time;
     if (!this.dtm && this.useArea) params.zoom = this.demZoom;
+    if (this.terrainFactor && this.terrainTableText.trim()) {
+      const rows = this.parseTerrainTable(this.terrainTableText);
+      if (rows?.length) params.terrainTable = rows;
+    }
     return params;
   }
   /**
@@ -6486,6 +6681,9 @@ class MovecostPanel {
     if (this.analysis === "boundary" && !params.contValue?.length) {
       return "Enter at least one cost limit for the boundary analysis.";
     }
+    if (this.terrainFactor && this.terrainTableText.trim() && this.parseTerrainTable(this.terrainTableText) === null) {
+      return "Could not read the terrain class table: use class=N pairs separated by commas, e.g. 1=1, 2=0.8, 3=Inf.";
+    }
     return null;
   }
   async run() {
@@ -6511,7 +6709,8 @@ class MovecostPanel {
           studyplot: !this.dtm && this.area ? JSON.stringify(toFeatureCollection(this.area.features)) : null,
           origin: pointsToGeoJson(this.origin.features, "O"),
           destin: spec.destination ? pointsToGeoJson(this.destination.features, "D") : null,
-          barrier: this.barrier.features.length ? JSON.stringify(toFeatureCollection(this.barrier.features)) : null
+          barrier: this.barrier.features.length ? JSON.stringify(toFeatureCollection(this.barrier.features)) : null,
+          terrain: this.terrainFactor?.bytes ?? null
         }
       );
       this.produced = [];
