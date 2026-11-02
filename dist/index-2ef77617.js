@@ -2588,7 +2588,22 @@ mcx_terrain_table <- function(params) {
   if (!all(c("class", "n") %in% names(tb))) {
     mcx_stop("The terrain table needs 'class' and 'N' columns.")
   }
-  data.frame(class = as.numeric(tb$class), N = as.numeric(tb$n))
+  # A column mixing numbers and "Inf" arrives as a LIST column after jsonlite's
+  # data-frame round-trip on the R service: flatten it element by element
+  # before as.numeric(), and name the offending entry instead of letting
+  # mc_surface() report a bare NA.
+  flat <- function(col) {
+    if (is.list(col)) vapply(col, function(v) as.character(v[[1]]), character(1)) else col
+  }
+  n <- suppressWarnings(as.numeric(flat(tb$n)))
+  cls <- suppressWarnings(as.numeric(flat(tb$class)))
+  if (anyNA(n) || anyNA(cls)) {
+    bad <- which(is.na(n) | is.na(cls))[1]
+    mcx_stop("The terrain table row ", bad, " does not parse (class='",
+             paste(flat(tb$class)[bad]), "', N='", paste(flat(tb$n)[bad]),
+             "'): use numbers, with N='Inf' for an impassable class.")
+  }
+  data.frame(class = cls, N = n)
 }
 
 #' The DTM a request refers to: a kept in-memory raster by handle, or a file.
@@ -4841,7 +4856,7 @@ const KIND_STYLES = {
 function resultStyle(key, kind) {
   return RESULT_STYLES[key] ?? KIND_STYLES[kind] ?? {};
 }
-const PLUGIN_VERSION = "0.3.0";
+const PLUGIN_VERSION = "0.3.1";
 const ANALYSES = [
   {
     id: "paths",
@@ -5625,7 +5640,7 @@ class MovecostPanel {
       }
       const n = Number(raw);
       if (!Number.isFinite(n) || n < 0) return null;
-      rows.push({ class: klass, N: n });
+      rows.push({ class: klass, N: String(n) });
     }
     return rows;
   }
