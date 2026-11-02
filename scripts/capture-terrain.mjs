@@ -2,13 +2,14 @@
 // clean backend badge, a baseline run, the terrain-factor raster + class table,
 // the rerun whose path detours around the Inf class, and the engine log.
 //
-//   node capture-terrain.mjs <geolibre-url> <data-base-url> <terrain-tif> [outdir]
+//   node capture-terrain.mjs <geolibre-url> <data-base-url> <terrain-tif> [outdir] [class-table]
 import { chromium } from "playwright";
 import { mkdirSync } from "node:fs";
 import { resolve } from "node:path";
 
-const [url, dataBase, terrainTif, outArg] = process.argv.slice(2);
+const [url, dataBase, terrainTif, outArg, tableArg] = process.argv.slice(2);
 const outdir = resolve(outArg ?? "build/terrain-shots");
+const classTable = tableArg ?? "1=1, 2=Inf";
 mkdirSync(outdir, { recursive: true });
 const log = (...a) => console.log(new Date().toISOString().slice(11, 19), ...a);
 
@@ -129,7 +130,7 @@ await shot("11-run-local-baseline");
 await page.locator('input.mcx-file[type="file"]').first().setInputFiles(terrainTif);
 await page.waitForTimeout(1500);
 const table = page.getByPlaceholder("e.g. 1=1, 2=0.8, 3=Inf").first();
-await table.fill("1=1, 2=Inf");
+await table.fill(classTable);
 await table.press("Tab");
 await page.waitForTimeout(800);
 // Bring the terrain block into view for its close-up.
